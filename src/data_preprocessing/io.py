@@ -20,11 +20,11 @@ def _temp_copy(path: Path) -> Path:
     return dst
 
 
-def open_nc(path: str | Path) -> xr.Dataset:
+def open_nc(path: str | Path, *, decode_times: bool = True) -> xr.Dataset:
     path = Path(path).resolve()
     if sys.platform == "win32":
         try:
-            return xr.open_dataset(path)
+            return xr.open_dataset(path, decode_times=decode_times)
         except (OSError, FileNotFoundError, ValueError):
-            return xr.open_dataset(_temp_copy(path))
-    return xr.open_dataset(path)
+            return xr.open_dataset(_temp_copy(path), decode_times=decode_times)
+    return xr.open_dataset(path, decode_times=decode_times)

@@ -22,6 +22,7 @@ if str(SRC) not in sys.path:
 
 from data_preprocessing.cleaner import load_config  # noqa: E402
 from data_preprocessing.config_sync import merge_pipeline_artifacts_into_config  # noqa: E402
+from data_preprocessing.merger import run_merge_for_task  # noqa: E402
 from data_preprocessing.preprocess_workers import (  # noqa: E402
     clean_anomaly_year_one,
     clean_eddy_one,
@@ -122,7 +123,7 @@ def run_anomaly(cfg: dict, limit: int | None, workers: int) -> None:
 
 def _steps_set(raw: str) -> set[str]:
     parts = {p.strip().lower() for p in raw.split(",") if p.strip()}
-    allowed = {"clean", "split", "stats", "all", "validate"}
+    allowed = {"clean", "split", "stats", "merge", "all", "validate"}
     bad = parts - allowed
     if bad:
         raise SystemExit(f"unknown --steps entries: {bad}; allowed: {allowed}")
@@ -149,7 +150,7 @@ def main() -> None:
         dest="steps",
         type=str,
         default="clean",
-        help="逗号分隔: clean, split, stats, validate, all（默认仅 clean；all=三者全做；validate=仅校验或与其它步组合）；与 --stage 同义",
+        help="逗号分隔: clean, split, stats, merge, validate, all（默认仅 clean；all=三者全做；merge=按时序合并清洗后的样本；validate=仅校验或与其它步组合）；与 --stage 同义",
     )
     ap.add_argument(
         "--sync-config-only",
@@ -203,6 +204,23 @@ def main() -> None:
             run_element(cfg, lim_el, workers)
         if args.task in ("all", "anomaly"):
             run_anomaly(cfg, lim_an, workers)
+
+    if "merge" in work_steps:
+        tasks: list[str] = ["eddy", "element", "anomaly"] if args.task == "all" else [args.task]
+        for tk in tasks:
+            task_name = {
+                "eddy": TASK_EDDY,
+                "element": TASK_ELEMENT,
+                "anomaly": TASK_ANOMALY,
+            }[tk]
+            limit = {
+                "eddy": lim_eddy,
+                "element": lim_el,
+                "anomaly": lim_an,
+            }[tk]
+            outs = run_merge_for_task(task_name, cfg, ROOT, limit=limit)
+            for p in outs:
+                _log.info("merged %s -> %s", tk, p.relative_to(ROOT))
 
     if "split" in work_steps or "stats" in work_steps:
         tasks: list[str] = []

@@ -58,6 +58,7 @@ python scripts/01_data_inspect.py --out outputs/data_stats/summary.json
 | `clean` | 读 raw，清洗后写入 `data/processed`（**默认仅本步**） |
 | `split` | 按 `configs/data_config.yaml` 中 `split` 比例划分，写出 `data/processed/splits/*.json` |
 | `stats` | 仅用**训练集**估计各变量 mean/std，写出 `data/processed/normalization/*_norm.json`，并合并进配置 |
+| `merge` | 将指定任务下清洗后的多个样本按时间坐标拼接成总文件（`eddy/element` 输出 `all_clean_merged.nc`；`anomaly` 输出 `oper_merged.nc` 与 `wave_merged.nc`） |
 | `validate` | 仅运行 **validator**：检查 `splits/*.json` 路径与 processed 样本（见 `data_preprocessing.validator`）；也可与 `clean`/`split`/`stats` 组合，或在本命令末尾加 `--validate` |
 | `all` | 等价于 `clean,split,stats` 三步（**不含** validate） |
 
@@ -81,6 +82,12 @@ python scripts/02_preprocess.py --task all --stage "split,stats"
 
 # 只跑某一类任务，例如要素
 python scripts/02_preprocess.py --task element --steps "clean,split,stats"
+
+# 将清洗后样本按时序合并（单任务）
+python scripts/02_preprocess.py --task element --steps merge
+
+# 清洗后立刻合并
+python scripts/02_preprocess.py --task all --steps "clean,merge"
 
 # 调试：每类只处理少量文件/年份
 python scripts/02_preprocess.py --task all --limit 2
