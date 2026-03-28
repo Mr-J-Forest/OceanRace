@@ -56,13 +56,13 @@ class _ConsoleColorFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         color = self.COLORS.get(record.levelno, self.RESET)
         
-        # 视觉层级优化：弱化时间与模块名，高亮级别，保持消息主体为默认颜色
+        # 视觉层级优化：精简终端输出，去掉模块名，缩短冗余时间格式，高亮级别
         fmt = (
-            f"{self.DIM}%(asctime)s{self.RESET} | "
-            f"{color}%(levelname)-8s{self.RESET} | "
-            f"{self.DIM}%(name)s{self.RESET} | %(message)s"
+            f"{self.DIM}%(asctime)s{self.RESET} "
+            f"{color}[%(levelname)s]{self.RESET} "
+            f"%(message)s"
         )
-        formatter = logging.Formatter(fmt, datefmt=_DATE_FMT)
+        formatter = logging.Formatter(fmt, datefmt="%H:%M:%S")
         return formatter.format(record)
 
 

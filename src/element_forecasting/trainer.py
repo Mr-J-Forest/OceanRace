@@ -15,8 +15,18 @@ from element_forecasting.dataset import ElementForecastWindowDataset
 from element_forecasting.evaluator import compute_regression_metrics_masked, masked_mse
 from element_forecasting.model import HybridElementForecastModel
 from utils.logger import get_logger, setup_logging, tqdm, tqdm_logging
+import torch.nn.functional as F
 
 _log = get_logger(__name__)
+
+def masked_fft_loss(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+	"""计算时序上幅频特性的 L1 差异，迫使模型保留高频分布特征，防止曲线随时间步无限平滑。"""
+	# shape (B, T, C, H, W)，沿 T 维度 (dim=1) 做 FFT
+	p = pred * mask
+	t = target * mask
+	p_fft = torch.fft.rfft(p, dim=1)
+	t_fft = torch.fft.rfft(t, dim=1)
+	return F.l1_loss(torch.abs(p_fft), torch.abs(t_fft))
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -73,6 +83,7 @@ def _collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
 		"x": x,
 		"y": y,
 		"y_valid": y_valid,
+		"t0": torch.tensor([b["t0"] for b in batch], dtype=torch.long),
 		"paths": [b["path"] for b in batch],
 	}
 
@@ -266,7 +277,8 @@ def run_training(args: argparse.Namespace) -> None:
 	lr = float(args.lr or train_cfg.get("lr", 1e-4))
 	epochs = int(args.epochs or train_cfg.get("epochs", 10))
 	loss_main_weight = float(train_cfg.get("loss_main_weight", 1.0))
-	loss_aux_transformer_weight = float(train_cfg.get("loss_aux_transformer_weight", 0.2))
+	loss_aux_transformer_weight = float(train_cfg.get("loss_aux_transformer_weight", 0.0))
+	loss_fft_weight = float(train_cfg.get("loss_fft_weight", 0.1))
 	grad_accum_steps = max(1, int(train_cfg.get("grad_accum_steps", 1)))
 	amp_enabled = bool(train_cfg.get("amp", True)) and str(device).startswith("cuda")
 	amp_device_type = "cuda" if str(device).startswith("cuda") else "cpu"
@@ -277,20 +289,14 @@ def run_training(args: argparse.Namespace) -> None:
 	best_path = ckpt_dir / "hybrid_best.pt"
 	history: list[dict[str, float]] = []
 
-	_log.info(
-		"start training | vars=%s | input_steps=%d | output_steps=%d | stitch_across_files=%s | channels=%d | grad_accum=%d | amp=%s | train_windows=%d | val_windows=%d | data_file=%s | open_file_lru_size=%d",
-		list(var_names),
-		input_steps,
-		output_steps,
-		stitch_across_files,
-		in_channels,
-		grad_accum_steps,
-		amp_enabled,
-		len(train_ds),
-		len(val_ds),
-		str(data_file) if data_file is not None else "",
-		open_file_lru_size,
-	)
+	_log.info("=" * 60)
+	_log.info("🚀 START TRAINING: Element Forecasting")
+	_log.info("=" * 60)
+	_log.info(f"⚙️  Model    : {in_channels} channels, vars={list(var_names)}")
+	_log.info(f"⏱️  Steps    : {input_steps} (in) -> {output_steps} (out)")
+	_log.info(f"📦 Data     : {len(train_ds)} train windows | {len(val_ds)} val windows")
+	_log.info(f"🚀 Training : amp={amp_enabled}, grad_accum={grad_accum_steps}, bs={train_loader.batch_size}")
+	_log.info("=" * 60)
 
 	for epoch in range(1, epochs + 1):
 		model.train()
@@ -298,18 +304,21 @@ def run_training(args: argparse.Namespace) -> None:
 		train_count = 0
 		optimizer.zero_grad(set_to_none=True)
 		with tqdm_logging():
-			for step, batch in enumerate(tqdm(train_loader, desc=f"epoch {epoch}/{epochs} train"), start=1):
+			train_pbar = tqdm(train_loader, desc=f"Epoch {epoch:02d}/{epochs:02d} [Train]", ncols=100, leave=False)
+			for step, batch in enumerate(train_pbar, start=1):
 				x = batch["x"].to(device).nan_to_num(0.0)
 				y = batch["y"].to(device).nan_to_num(0.0)
 				y_valid = batch["y_valid"].to(device)
+				t0 = batch["t0"].to(device)
 				try:
 					with torch.amp.autocast(amp_device_type, enabled=amp_enabled):
-						out = model(x)
+						out = model(x, t0=t0)
 						pred = out["pred"]
 						pred_transformer = out["pred_transformer"]
 						loss_main = masked_mse(pred, y, y_valid)
 						loss_aux = masked_mse(pred_transformer, y, y_valid)
-						loss = loss_main_weight * loss_main + loss_aux_transformer_weight * loss_aux
+						loss_fft = masked_fft_loss(pred, y, y_valid)
+						loss = loss_main_weight * loss_main + loss_aux_transformer_weight * loss_aux + loss_fft_weight * loss_fft
 				except torch.OutOfMemoryError as ex:
 					if str(device).startswith("cuda"):
 						torch.cuda.empty_cache()
@@ -334,6 +343,7 @@ def run_training(args: argparse.Namespace) -> None:
 
 				train_loss_sum += float(loss.item()) * x.size(0)
 				train_count += x.size(0)
+				train_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
 		if train_count > 0 and (len(train_loader) % grad_accum_steps != 0):
 			scaler.unscale_(optimizer)
@@ -350,20 +360,25 @@ def run_training(args: argparse.Namespace) -> None:
 		val_metrics_sum = {"mse": 0.0, "mae": 0.0, "nse": 0.0}
 
 		with torch.no_grad():
-			for batch in val_loader:
-				x = batch["x"].to(device)
-				y = batch["y"].to(device)
-				y_valid = batch["y_valid"].to(device)
-				pred = model(x)["pred"]
-				loss = masked_mse(pred, y, y_valid)
-				bs = x.size(0)
-				val_loss_sum += float(loss.item()) * bs
-				val_count += bs
+			with tqdm_logging():
+				val_pbar = tqdm(val_loader, desc=f"Epoch {epoch:02d}/{epochs:02d} [Val  ]", ncols=100, leave=False)
+				for batch in val_pbar:
+					x = batch["x"].to(device)
+					y = batch["y"].to(device)
+					y_valid = batch["y_valid"].to(device)
+					t0 = batch["t0"].to(device)
+					pred = model(x, t0=t0)["pred"]
+					loss = masked_mse(pred, y, y_valid)
+					bs = x.size(0)
+					val_loss_sum += float(loss.item()) * bs
+					val_count += bs
 
-				# 逐批次计算并累加，防止全部 concat 导致 OOM
-				batch_metrics = compute_regression_metrics_masked(pred, y, y_valid)
-				for k in val_metrics_sum:
-					val_metrics_sum[k] += batch_metrics[k] * bs
+					# 逐批次计算并累加，防止全部 concat 导致 OOM
+					batch_metrics = compute_regression_metrics_masked(pred, y, y_valid)
+					for k in val_metrics_sum:
+						val_metrics_sum[k] += batch_metrics[k] * bs
+					
+					val_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
 		val_loss = val_loss_sum / max(val_count, 1)
 		metrics = {k: v / max(val_count, 1) for k, v in val_metrics_sum.items()}
@@ -379,14 +394,14 @@ def run_training(args: argparse.Namespace) -> None:
 			"val_nse": float(metrics["nse"]),
 		}
 		history.append(epoch_record)
+		
+		# 精简的单行输出，取消各种花哨标签，只留核心数据
 		_log.info(
-			"epoch=%d train_loss=%.6f val_loss=%.6f val_rmse=%.6f val_mae=%.6f val_nse=%.6f",
-			epoch,
-			train_loss,
-			val_loss,
-			metrics["rmse"],
-			metrics["mae"],
-			metrics["nse"],
+			f"Epoch {epoch:02d}/{epochs:02d} | "
+			f"Train Loss: {train_loss:.4f} | "
+			f"Val Loss: {val_loss:.4f} | "
+			f"RMSE: {metrics['rmse']:.4f} | "
+			f"MAE: {metrics['mae']:.4f}"
 		)
 
 		if val_loss < best_val:
@@ -408,7 +423,14 @@ def run_training(args: argparse.Namespace) -> None:
 		json.dumps(history, ensure_ascii=False, indent=2),
 		encoding="utf-8",
 	)
-	_log.info("training done | best_val=%.6f | checkpoint=%s", best_val, best_path)
+	
+	_log.info("=" * 60)
+	_log.info("🎉 TRAINING COMPLETED 🎉")
+	_log.info("=" * 60)
+	_log.info(f"🏆 Best Validation Loss : {best_val:.6f}")
+	_log.info(f"💾 Checkpoint Saved To  : {best_path}")
+	_log.info(f"📊 Training History     : {metrics_dir / 'train_history.json'}")
+	_log.info("=" * 60)
 
 
 def main() -> None:

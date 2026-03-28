@@ -15,6 +15,9 @@
    - `pred_transformer`：Transformer 分支预测结果（与 `pred` 一致）。
    - 推理器默认对预测结果执行反标准化，恢复到原始物理量量纲（可通过参数关闭）。
 
+3. 周期性时间编码 (Time-of-Day Embedding)
+   - 针对预测长波段中常见的随时间周期波动的现象（如昼夜海温变化、潮汐导致的风速波动），模型输入层引入了绝对时间维度的正弦与余弦编码（基于给定时间窗口的相对/绝对步数，假设 `24h` 基础物理循环），并在自注意力机制各层累加该编码以增强周期性拟合。
+
 ## 数据与输入输出
 
 1. 按时间窗口采样
@@ -33,4 +36,5 @@
 
 1. 支持 AMP、梯度累积与多进程 DataLoader。
 2. 支持空间下采样建模后上采样恢复（`spatial_downsample`），用于降低显存压力。
-3. 训练入口位于 `trainer.py`，配置位于 `configs/element_forecasting/model.yaml` 与 `configs/element_forecasting/train.yaml`。
+3. 频域损失 (FFT Loss)：为了防止预测曲线在长周期预测（如 48h、72h）阶段因趋向于平均值而变平缓，采用时空域损失叠加频域幅值 `l1_loss` 的策略，强制迫使生成曲线还原具有波动特点的高频成分。
+4. 训练入口位于 `trainer.py`，配置位于 `configs/element_forecasting/model.yaml` 与 `configs/element_forecasting/train.yaml`。

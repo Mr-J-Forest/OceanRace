@@ -38,6 +38,7 @@ grad_accum_steps: 2
 # 损失配置
 loss_main_weight: 1.0
 loss_aux_transformer_weight: 0.0
+loss_fft_weight: 0.1
 
 # 输出目录（中间产物）
 output_dir: outputs/element_forecasting

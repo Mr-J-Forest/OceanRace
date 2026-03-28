@@ -124,6 +124,8 @@ class TransformerForecastBranch(nn.Module):
 		self.spatial_downsample = max(1, int(spatial_downsample))
 		self.in_proj = nn.Linear(in_channels, d_model)
 		self.pos_emb = nn.Parameter(torch.zeros(1, input_steps, d_model))
+		# Time-of-Day Embedding: Sin and Cos projection
+		self.tod_emb = nn.Linear(2, d_model)
 		self.encoder = BlockResidualTransformerEncoder(
 			num_layers=num_layers,
 			d_model=d_model,
@@ -133,7 +135,7 @@ class TransformerForecastBranch(nn.Module):
 		)
 		self.out_proj = nn.Linear(d_model, output_steps * in_channels)
 
-	def forward(self, x: torch.Tensor) -> torch.Tensor:
+	def forward(self, x: torch.Tensor, t0: torch.Tensor | None = None) -> torch.Tensor:
 		if x.dim() != 5:
 			raise ValueError(f"expected x with shape (B,T,C,H,W), got {tuple(x.shape)}")
 		bsz, t_in, ch, h, w = x.shape
@@ -151,9 +153,29 @@ class TransformerForecastBranch(nn.Module):
 			h_r, w_r = h, w
 			x_work = x
 
+		# Time-of-Day Embedding (using t0 if provided, else relative sequence)
+		device = x.device
+		seq_idx = torch.arange(t_in, device=device).unsqueeze(0).expand(bsz, t_in)
+		if t0 is not None:
+			# t0 shape: (B,)
+			abs_time = seq_idx + t0.unsqueeze(1)
+		else:
+			abs_time = seq_idx
+		
+		# 假设 1 step = 1 小时周期
+		sin_tod = torch.sin(2 * torch.pi * abs_time / 24.0).unsqueeze(-1)
+		cos_tod = torch.cos(2 * torch.pi * abs_time / 24.0).unsqueeze(-1)
+		tod_feats = torch.cat([sin_tod, cos_tod], dim=-1) # (B, T_in, 2)
+		tod_embeds = self.tod_emb(tod_feats) # (B, T_in, d_model)
+
 		# 每个空间位置独立建模时间序列，统一批处理提升吞吐。
 		token = x_work.permute(0, 3, 4, 1, 2).reshape(bsz * h_r * w_r, t_in, ch)
-		h_tok = self.in_proj(token) + self.pos_emb[:, :t_in, :]
+		# 维度对齐: token 是 (B*H*W, T, C), tod_embeds 是 (B, T, D)
+		# 需要把 tod 膨胀到各个网格位置 (B, 1, 1, T, D) -> (B*H*W, T, D)
+		tod_embeds_expanded = tod_embeds.view(bsz, 1, 1, t_in, -1).expand(bsz, h_r, w_r, t_in, -1)
+		tod_embeds_expanded = tod_embeds_expanded.reshape(bsz * h_r * w_r, t_in, -1)
+
+		h_tok = self.in_proj(token) + self.pos_emb[:, :t_in, :] + tod_embeds_expanded
 		h_tok = self.encoder(h_tok)
 		tail = h_tok[:, -1, :]
 		pred_low = self.out_proj(tail).view(bsz, h_r, w_r, self.output_steps, ch)
@@ -195,8 +217,8 @@ class HybridElementForecastModel(nn.Module):
 			spatial_downsample=spatial_downsample,
 		)
 
-	def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-		pred_transformer = self.transformer(x)
+	def forward(self, x: torch.Tensor, t0: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+		pred_transformer = self.transformer(x, t0=t0)
 		pred = pred_transformer
 		return {
 			"pred": pred,

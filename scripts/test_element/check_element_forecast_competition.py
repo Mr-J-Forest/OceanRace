@@ -500,15 +500,14 @@ def main() -> None:
         collate_fn=_collate,
     )
 
-    _log.info(
-        "start single-file competition check | split=%s | selected_windows=%d | total_windows=%d | data_file=%s | eval_steps=%d | rolling_iters~=%d",
-        args.split,
-        split_stats["selected"],
-        split_stats["total"],
-        str(data_file),
-        eval_steps,
-        rolling_iters,
-    )
+    _log.info("=" * 60)
+    _log.info("🕵️ START COMPETITION CHECK (Single File)")
+    _log.info("=" * 60)
+    _log.info(f"📂 Data     : {data_file.name}")
+    _log.info(f"🔢 Windows  : {split_stats['selected']} selected (Split: {args.split})")
+    _log.info(f"⏱️  Steps    : {input_steps} (in) -> {eval_steps} (out total)")
+    _log.info(f"🌀 Rollout  : Approx {rolling_iters} autoregressive loops per window")
+    _log.info("=" * 60)
 
     eps = 1e-12
     total_samples = 0
@@ -528,7 +527,8 @@ def main() -> None:
     sample_mask: torch.Tensor | None = None
 
     with tqdm_logging():
-        for bi, batch in enumerate(tqdm(loader, desc="competition-check"), start=1):
+        pbar = tqdm(loader, desc="Comp-Check", ncols=100)
+        for bi, batch in enumerate(pbar, start=1):
             x = batch["x"].float()
             y_std = batch["y"].float()
             y_valid = batch["y_valid"].float()
@@ -681,15 +681,26 @@ def main() -> None:
     summary_md = output_dir / "competition_summary.md"
     _write_markdown_summary(summary_md, report, figure_files, str(per_horizon_csv))
 
-    verdict = "PASS" if pass_all else "FAIL"
-    _log.info(
-        "competition check done | verdict=%s | horizon=%.1fh | rel_mse=%.4f%% | report=%s",
-        verdict,
-        horizon_hours,
-        rel_mse_pct,
-        str(report_json),
-    )
-    _log.info("artifacts ready | summary=%s | per_horizon_csv=%s | figures=%d", str(summary_md), str(per_horizon_csv), len(figure_files))
+    verdict_str = "✅ PASS" if pass_all else "❌ FAIL"
+    _log.info("=" * 60)
+    _log.info("🚀 COMPETITION EVALUATION REPORT 🚀")
+    _log.info("=" * 60)
+    _log.info(f"🎯 Verdict         : {verdict_str}")
+    _log.info(f"⏱️  Horizon         : {horizon_hours:.2f} h (Target: >= {args.horizon_hours_threshold} h) -> {'✅' if pass_horizon else '❌'}")
+    _log.info(f"📉 Relative MSE    : {rel_mse_pct:.4f} % (Target: <= {args.mse_percent_threshold} %) -> {'✅' if pass_mse_pct else '❌'}")
+    _log.info("-" * 60)
+    _log.info("🏅 Detailed Metrics:")
+    _log.info(f"  - MSE            : {mse:.6f}")
+    _log.info(f"  - RMSE           : {rmse:.6f}")
+    _log.info(f"  - MAE            : {mae:.6f}")
+    _log.info(f"  - NSE            : {nse:.6f}")
+    _log.info("-" * 60)
+    _log.info("📁 Generated Artifacts:")
+    _log.info(f"  - JSON Report    : {report_json}")
+    _log.info(f"  - Markdown       : {summary_md}")
+    _log.info(f"  - Metrics CSV    : {per_horizon_csv}")
+    _log.info(f"  - Figures ({len(figure_files)})   : {figures_dir}")
+    _log.info("=" * 60)
 
 
 if __name__ == "__main__":
