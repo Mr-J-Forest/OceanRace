@@ -168,14 +168,20 @@ class TransformerForecastBranch(nn.Module):
 		tod_feats = torch.cat([sin_tod, cos_tod], dim=-1) # (B, T_in, 2)
 		tod_embeds = self.tod_emb(tod_feats) # (B, T_in, d_model)
 
-		# 每个空间位置独立建模时间序列，统一批处理提升吞吐。
-		token = x_work.permute(0, 3, 4, 1, 2).reshape(bsz * h_r * w_r, t_in, ch)
-		# 维度对齐: token 是 (B*H*W, T, C), tod_embeds 是 (B, T, D)
-		# 需要把 tod 膨胀到各个网格位置 (B, 1, 1, T, D) -> (B*H*W, T, D)
-		tod_embeds_expanded = tod_embeds.view(bsz, 1, 1, t_in, -1).expand(bsz, h_r, w_r, t_in, -1)
-		tod_embeds_expanded = tod_embeds_expanded.reshape(bsz * h_r * w_r, t_in, -1)
-
-		h_tok = self.in_proj(token) + self.pos_emb[:, :t_in, :] + tod_embeds_expanded
+		# 优化掉显存杀手：利用张量广播 (Broadcasting) 代替暴力的 expand() + reshape()。
+		# token shape 这里还是 (B*H*W, T_in, C)
+		token_flat = x_work.permute(0, 3, 4, 1, 2).reshape(bsz * h_r * w_r, t_in, ch)
+		
+		# 将 token 恢复成带有 batch 维度的以便加时间编码
+		h_tok_view = self.in_proj(token_flat).view(bsz, h_r * w_r, t_in, -1)
+		
+		# tod_embeds shape: (B, T_in, D) -> (B, 1, T_in, D) 
+		# pos_emb shape: (1, T_in, D) -> (1, 1, T_in, D)
+		# 利用广播机制 zero-copy 完成位置编码累加
+		h_tok_view = h_tok_view + self.pos_emb[:, :t_in, :].unsqueeze(1) + tod_embeds.unsqueeze(1)
+		
+		# 加完后展平喂给后续的 attention
+		h_tok = h_tok_view.reshape(bsz * h_r * w_r, t_in, -1)
 		h_tok = self.encoder(h_tok)
 		tail = h_tok[:, -1, :]
 		pred_low = self.out_proj(tail).view(bsz, h_r, w_r, self.output_steps, ch)
