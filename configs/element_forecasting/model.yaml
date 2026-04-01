@@ -1,2 +1,0 @@
-# 水文要素预报主模型超参数（非基线，见 configs/baseline/element_forecasting/）
-# 示例：序列长度、网络结构、通道数等

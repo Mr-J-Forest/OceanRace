@@ -44,6 +44,17 @@ def standardize_tensor(
     return (t - m) / s
 
 
+def destandardize_tensor(
+    t: torch.Tensor,
+    key: str,
+    norm: dict[str, tuple[float, float]] | None,
+) -> torch.Tensor:
+    if norm is None or key not in norm:
+        return t
+    m, s = norm[key]
+    return t * s + m
+
+
 def discover_clean_paths(processed_dir: Path) -> list[Path]:
     """递归发现 processed 目录下的 ``*_clean.nc``。"""
 

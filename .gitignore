@@ -54,3 +54,7 @@ Thumbs.db
 
 # Ignore sensitive configs if any
 configs/*.secret
+configs/element_forecasting/*
+!configs/element_forecasting/*.yaml.example
+configs/baseline/*
+!configs/baseline/**/*.yaml.example

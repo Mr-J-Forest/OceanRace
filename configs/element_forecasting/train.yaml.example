@@ -1,0 +1,46 @@
+# 水文要素预报主模型训练参数（示范样本），请复制为 train.yaml 并修改相应路径及参数
+
+# 变量列表可覆盖 model.yaml；输入变量=输出变量
+var_names:
+  - sst
+  - sss
+  - ssu
+  - ssv
+
+# 数据来源
+processed_dir: data/processed/element_forecasting
+# 如果想要单文件模式：设置后优先使用该单文件（忽略 manifest/split）
+data_file: data/processed/element_forecasting/all_clean_merged.nc
+
+# 提供切分和标准化文件的路径
+manifest_path: data/processed/splits/element_forecasting.json
+norm_stats_path: data/processed/normalization/element_forecasting_norm.json
+
+# 滑窗采样参数
+window_stride: 4             # 控制数据集窗滑移步长
+stitch_across_files: true    # 是否跨文件拼接缝合时序数据
+
+# 单文件模式切分（按时间窗数量划分）
+single_file_train_ratio: 0.7
+single_file_val_ratio: 0.2
+single_file_test_ratio: 0.1
+
+# 性能调优，文件句柄LRU缓存大小
+open_file_lru_size: 16
+
+# 训练基础超参数设定
+epochs: 10                   # 训练轮数
+batch_size: 4                # 每批次大小。显存大可上调
+lr: 0.0001                   # 学习率
+num_workers: 4               # 数据加载工作线程数，根据 CPU 决定
+device: auto                 # `auto` 会自动选择 cuda 或 CPU
+amp: true                    # 自动混合精度(fp16)加速
+grad_accum_steps: 2          # 梯度累加，变相增大 batch_size
+
+# 损失配置权重
+loss_main_weight: 1.0               
+loss_aux_transformer_weight: 0.0
+loss_fft_weight: 0.1
+
+# 输出目录，保存checkpoint与历史记录指标等（中间产物）
+output_dir: outputs/element_forecasting

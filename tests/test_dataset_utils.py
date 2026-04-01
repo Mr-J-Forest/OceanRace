@@ -5,13 +5,16 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 from utils.dataset_utils import (
     build_cumulative_ends,
     build_global_window_starts,
+    destandardize_tensor,
     discover_clean_paths,
     locate_file_index,
     slice_across_files,
+    standardize_tensor,
 )
 
 
@@ -69,3 +72,14 @@ def test_discover_clean_paths(tmp_path) -> None:
     (d / "b_clean.nc").write_bytes(b"2")
     got = discover_clean_paths(d)
     assert sorted(p.name for p in got) == ["a_clean.nc", "b_clean.nc"]
+
+
+def test_standardize_destandardize_roundtrip() -> None:
+    t = np.array([1.0, 3.0, 5.0], dtype=np.float32)
+    x = standardize_tensor(
+        torch.from_numpy(t),
+        key="sst",
+        norm={"sst": (2.0, 0.5)},
+    )
+    y = destandardize_tensor(x, key="sst", norm={"sst": (2.0, 0.5)})
+    assert np.allclose(y.numpy(), t)

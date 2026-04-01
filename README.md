@@ -70,7 +70,7 @@ OceanRace/
 | `AGENTS.md` | **AI 编程 Prompt**（@ 引用）：logger、`visualization_defaults`、`outputs` 分层、`configs` 单一来源 |
 | `scripts/README.md` | 脚本说明、日志约定、基线实验衔接、典型流程 |
 | `scripts/01_data_inspect.py` | 只读：抽样 `data/raw`，缺测率与最值（可 `--out JSON`） |
-| `scripts/02_preprocess.py` | 清洗 → `data/processed/`，可选划分与训练集标准化（`--steps`） |
+| `scripts/02_preprocess.py` | 清洗 → `data/processed/`，可选整合大文件（`merge`）、划分与训练集标准化（`--steps`） |
 | `scripts/smoke_element_forecast.py` | 极少样本合成数据，跑 1 epoch 验证要素基线训练链路 |
 | `scripts/03_train_eddy.py` 等 | 训练/流水线/报告脚本（`03`–`07`）；要素预报用 `python scripts/04_train_forecast.py` |
 | `src/baseline/` | 基线实验代码（`PYTHONPATH=src`，如 `python -m baseline.element_forecasting.train`） |
@@ -85,6 +85,9 @@ OceanRace/
 | 目录 | 说明 |
 |------|------|
 | `outputs/` | 存放**中间训练结果**（checkpoint、日志等），已 gitignore，不提交 |
+| `outputs/eddy_detection/merged_chunks/` | 涡旋清洗小文件整合后的大文件（可分块） |
+| `outputs/element_forecasting/merged_chunks/` | 要素清洗小文件整合后的大文件（可分块） |
+| `outputs/anomaly_detection/merged_chunks/` | 异常检测 `oper/wave` 清洗文件整合后的大文件（可分块） |
 | `outputs/final_results/` | 存放**最终最佳输出结果**（指标、图表等），可提交。下设三模块子目录：`eddy_detection/`、`element_forecasting/`、`anomaly_detection/` |
 | `models/` | 存放**最佳模型**。训练完成后从 `outputs/` 挑选最优 checkpoint，复制到 `models/` 后可提交 |
 
@@ -94,20 +97,21 @@ OceanRace/
 
 ### 模块1：数据预处理 (`src/data_preprocessing/`)
 
-**职责：** 处理原始 NetCDF，为训练提供干净、标准化的输入。
+**职责：** 处理原始 NetCDF，为训练提供干净、标准化的输入，并可将清洗后的小文件整合为大文件。
 
-**流程：** `scripts/01_data_inspect.py`（只读统计）→ `cleaner.py`（哨兵/NaN→掩膜）→ `scripts/02_preprocess.py` 落盘 `data/processed/`（可选 `splitter` 划分与训练集 \(\mu,\sigma\)）→ 各任务模块 `dataset.py` 中 `Dataset` 供训练。
+**流程：** `scripts/01_data_inspect.py`（只读统计）→ `cleaner.py`（哨兵/NaN→掩膜）→ `scripts/02_preprocess.py` 落盘 `data/processed/`（可选 `merger` 整合、`splitter` 划分与训练集 \(\mu,\sigma\)）→ 各任务模块 `dataset.py` 中 `Dataset` 供训练。
 
-**文件：** `cleaner.py` · `io.py` · `splitter.py` · `validator.py`
+**文件：** `cleaner.py` · `io.py` · `merger.py` · `splitter.py` · `validator.py`
 
 | 文件 | 要点 |
 |------|------|
 | `cleaner.py` | 单文件清洗；哨兵与 NaN 掩膜；`*_valid` |
 | `io.py` | 打开 NetCDF（含 Windows 中文路径） |
+| `merger.py` | 将某任务多个清洗文件按时间维整合为一个或多个大文件（支持分块） |
 | `splitter.py` | train/val/test 划分；仅用训练集估计标准化参数并写 JSON |
 | `validator.py` | 校验 processed 变量/`*_valid`/时间维单调/有效点比例；`splits/*.json` 路径存在性（`run_validation_for_task` 等） |
 
-**产出：** `data/processed/`、质量验证报告、划分后的数据集。
+**产出：** `data/processed/`、`outputs/*/merged_chunks/`、质量验证报告、划分后的数据集。
 
 ---
 

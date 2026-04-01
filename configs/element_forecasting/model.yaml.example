@@ -1,0 +1,20 @@
+# 水文要素预报主模型超参数（示范样本），请复制为 model.yaml 并修改相应路径及参数
+
+# 输入变量=输出变量；可改为其他任务变量，例如 [adt, ugos, vgos] 或 [u10, v10, swh, mwp, mwd]
+var_names:
+  - sst
+  - sss
+  - ssu
+  - ssv
+
+# 以时间步为单位，而非文件个数
+input_steps: 72   # 模型读取过去多少步
+output_steps: 72  # 模型单次前向输出未来多少步
+
+# Transformer with Block Attn-Res 网络架构参数
+d_model: 96           # 隐层维度规模，根据算加显存情况调整，如 64, 96, 128
+nhead: 6              # 注意力头数
+num_layers: 4         # 堆叠层数
+block_size: 4         # block-level attention 的周期大小
+dropout: 0.05         # 丢弃率
+spatial_downsample: 2 # 空间下采样倍数（减小token数量，提升速度降低显存消耗）

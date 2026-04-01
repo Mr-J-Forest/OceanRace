@@ -17,6 +17,7 @@
 | `05_train_anomaly.py` | 异常检测训练入口（**占位**） |
 | `06_run_pipeline.py` | 端到端流水线（**占位**） |
 | `07_generate_report.py` | 评估报告生成（**占位**） |
+| `08_check_element_forecast_competition.py` | 要素预测比赛门槛检查（支持 12h 滚动到 72h + MSE≤15%），输出 PASS/FAIL JSON |
 
 除 `01`/`02` 外，`04_train_forecast.py` 已实现；其余多为预留入口。
 

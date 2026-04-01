@@ -1,6 +1,6 @@
 # `src/data_preprocessing` 说明
 
-本包实现：**清洗**（`cleaner.py`）、**划分与训练集标准化**（`splitter.py`）、**I/O**（`io.py`）、**校验**（`validator.py`）、**配置回写**（`config_sync.py`）及并行 worker（`preprocess_workers.py`）。命令行入口为项目根目录 [`scripts/02_preprocess.py`](../../scripts/02_preprocess.py)。
+本包实现：**清洗**（`cleaner.py`）、**整合**（`merger.py`）、**划分与训练集标准化**（`splitter.py`）、**I/O**（`io.py`）、**校验**（`validator.py`）、**配置回写**（`config_sync.py`）及并行 worker（`preprocess_workers.py`）。命令行入口为项目根目录 [`scripts/02_preprocess.py`](../../scripts/02_preprocess.py)。
 
 运行脚本或导入本包前，在项目根目录将 `src` 加入 `PYTHONPATH`（PowerShell：`$env:PYTHONPATH = "src"`）。日志约定见 [`../utils/README.md`](../utils/README.md)。
 
@@ -58,6 +58,7 @@ python scripts/02_preprocess.py --sync-config-only
 | 单任务清洗 + 限制文件数（调试） | `python scripts/02_preprocess.py --task eddy --limit 2` |
 | 按时序合并清洗后样本 | `python scripts/02_preprocess.py --task element --steps merge` |
 | 清洗后立即合并 | `python scripts/02_preprocess.py --task all --steps clean,merge` |
+| 按分块整合（每 120 个小文件输出 1 个大文件） | `python scripts/02_preprocess.py --task element --steps merge --merge-files-per-output 120` |
 | 清洗并行进程数 | `python scripts/02_preprocess.py --task all -j 4` |
 | 清洗后做划分 + 训练集 μ/σ + 回写配置 | `python scripts/02_preprocess.py --task all --steps clean,split,stats` 或 `--steps all` |
 | 已有清洗结果，只划分与统计 | `python scripts/02_preprocess.py --task all --steps split,stats` |
@@ -66,13 +67,13 @@ python scripts/02_preprocess.py --sync-config-only
 | 大数据量时限制校验样本数 | `python scripts/02_preprocess.py --steps validate --validate-limit 50` |
 | 指定配置 | `python scripts/02_preprocess.py --config configs/data_config.yaml` |
 
-**`--steps`（与 `--stage` 同义）取值：** `clean` · `split` · `stats` · `merge` · `validate` · `all`（`all` = clean + split + stats，不含单独 `validate`，需另加 `--validate` 或 `--steps validate`）。
+**`--steps`（与 `--stage` 同义）取值：** `clean` · `merge` · `split` · `stats` · `validate` · `all`（`all` = clean + split + stats，不含单独 `validate`，需另加 `--validate` 或 `--steps validate`）。
 
-`merge` 产物默认写到 `paths.processed` 对应目录：
+**merge 默认输出：**
 
-- `eddy`：`data/processed/eddy_detection/all_clean_merged.nc`
-- `element`：`data/processed/element_forecasting/all_clean_merged.nc`
-- `anomaly`：`data/processed/anomaly_detection/oper_merged.nc` 与 `data/processed/anomaly_detection/wave_merged.nc`
+- `eddy` → `outputs/eddy_detection/merged_chunks/`
+- `element` → `outputs/element_forecasting/merged_chunks/`
+- `anomaly` → `outputs/anomaly_detection/merged_chunks/`（`oper` 与 `wave` 分流输出）
 
 **说明：** `stats` 步会读对应任务的 `splits/*.json` 中 `train` 路径估计标准化；跑 `stats` 后脚本会调用 `merge_pipeline_artifacts_into_config` 更新 `data_config.yaml` 中的 artifacts / standardization 等字段。
 
@@ -84,7 +85,7 @@ python scripts/02_preprocess.py --sync-config-only
 |------|------|
 | `cleaner.py` | 单数据集清洗；`load_config` 读 YAML。 |
 | `io.py` | `open_nc`；Windows 中文路径容错。 |
-| `merger.py` | 按时间坐标排序并合并清洗后的 NetCDF。 |
+| `merger.py` | 将某任务清洗后文件按时间维拼接合并。 |
 | `splitter.py` | 列举 processed 样本、划分、`compute_train_standardization`、写 manifest 与 norm JSON。 |
 | `validator.py` | 清洗结果与划分清单质量检查。 |
 | `config_sync.py` | 将磁盘上的 splits / normalization 摘要合并回 `data_config.yaml`。 |

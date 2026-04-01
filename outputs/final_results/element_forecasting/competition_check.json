@@ -1,0 +1,45 @@
+{
+  "task": "element_forecasting",
+  "checkpoint": "/root/autodl-tmp/OceanRace/outputs/element_forecasting/checkpoints/hybrid_best.pt",
+  "dataset": {
+    "source_mode": "single_file_fallback",
+    "split": "test",
+    "data_file": "/root/autodl-tmp/OceanRace/data/processed/element_forecasting/all_clean_merged.nc",
+    "num_windows": 47761,
+    "num_eval_samples": 1
+  },
+  "model": {
+    "var_names": [
+      "sst",
+      "sss",
+      "ssu",
+      "ssv"
+    ],
+    "input_steps": 12,
+    "single_shot_output_steps": 12,
+    "eval_output_steps": 72,
+    "time_step_hours": 1.0,
+    "horizon_hours": 72.0
+  },
+  "competition_thresholds": {
+    "horizon_hours_min": 72.0,
+    "mse_percent_max": 15.0
+  },
+  "metrics": {
+    "mse": 1.4215669631958008,
+    "rmse": 1.1922948360443115,
+    "mae": 0.4313919246196747,
+    "nse": 0.9918826818466187,
+    "relative_mse_percent": 0.5132443904876709
+  },
+  "pass": {
+    "horizon": true,
+    "mse_percent": true,
+    "overall": true
+  },
+  "notes": [
+    "relative_mse_percent = sum((pred-target)^2)/sum(target^2)*100（mask有效点）",
+    "若 time_step_hours 不是 1 小时，请通过参数覆盖",
+    "评估采用滚动预测：单次输出窗口循环回灌，直到 eval_horizon_hours"
+  ]
+}

@@ -41,19 +41,33 @@ def write_eddy_clean_nc(
     ds.to_netcdf(path)
 
 
-def write_element_clean_nc(path: Path) -> None:
-    t, la, lo = 2, 2, 2
+def write_element_clean_nc(
+    path: Path,
+    *,
+    t: int = 2,
+    lat: int = 2,
+    lon: int = 2,
+    base: float = 1.0,
+    step: float = 1.0,
+    vars_names: tuple[str, ...] = ("sst", "sss", "ssu", "ssv"),
+) -> None:
+    """写入 element clean 样例；每个变量随时间线性变化，便于断言窗口内容。"""
+
+    la, lo = lat, lon
     shape = (t, la, lo)
     ones = np.ones(shape, dtype=np.float32)
-    names = ("sst", "sss", "ssu", "ssv")
     data_vars = {}
-    for n in names:
-        data_vars[n] = (("time", "lat", "lon"), np.ones(shape, dtype=np.float32))
+    for i, n in enumerate(vars_names):
+        # 每个变量使用不同起点，防止多变量时互相混淆。
+        offset = base + i * 100.0
+        seq = np.arange(t, dtype=np.float32) * step + offset
+        arr = np.broadcast_to(seq[:, None, None], shape).astype(np.float32)
+        data_vars[n] = (("time", "lat", "lon"), arr)
         data_vars[f"{n}_valid"] = (("time", "lat", "lon"), ones)
     ds = xr.Dataset(
         data_vars=data_vars,
         coords={
-            "time": [0.0, 1.0],
+            "time": np.arange(t, dtype=np.float32),
             "lat": np.arange(la, dtype=np.float32),
             "lon": np.arange(lo, dtype=np.float32),
         },

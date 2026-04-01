@@ -1,6 +1,0 @@
-# 要素预报基线训练参数
-epochs: 5
-batch_size: 4         # 8GB 显存建议 ≤8；显存不足可改为 2 或 1
-lr: 0.001
-device: auto          # auto | cuda | cpu
-num_workers: 4        # DataLoader 多进程 worker 数
