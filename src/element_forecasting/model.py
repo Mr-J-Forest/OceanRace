@@ -69,7 +69,8 @@ class BlockResidualTransformerLayer(nn.Module):
 	) -> torch.Tensor:
 		partial = x if partial_block is None else partial_block
 		x = x + block_attn_res(blocks, partial, self.block_proj_attn, self.block_norm_attn)
-		attn_out, _ = self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), need_weights=False)
+		n1 = self.norm1(x)
+		attn_out, _ = self.self_attn(n1, n1, n1, need_weights=False)
 		x = x + attn_out
 		x = x + block_attn_res(blocks, partial, self.block_proj_mlp, self.block_norm_mlp)
 		x = x + self.mlp(self.norm2(x))

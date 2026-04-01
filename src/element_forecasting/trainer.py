@@ -314,11 +314,12 @@ def run_training(args: argparse.Namespace) -> None:
 					with torch.amp.autocast(amp_device_type, enabled=amp_enabled):
 						out = model(x, t0=t0)
 						pred = out["pred"]
-						pred_transformer = out["pred_transformer"]
 						loss_main = masked_mse(pred, y, y_valid)
-						loss_aux = masked_mse(pred_transformer, y, y_valid)
 						loss_fft = masked_fft_loss(pred, y, y_valid)
-						loss = loss_main_weight * loss_main + loss_aux_transformer_weight * loss_aux + loss_fft_weight * loss_fft
+						loss = loss_main_weight * loss_main + loss_fft_weight * loss_fft
+						if loss_aux_transformer_weight != 0.0:
+							loss_aux = masked_mse(out["pred_transformer"], y, y_valid)
+							loss = loss + loss_aux_transformer_weight * loss_aux
 				except torch.OutOfMemoryError as ex:
 					if str(device).startswith("cuda"):
 						torch.cuda.empty_cache()
