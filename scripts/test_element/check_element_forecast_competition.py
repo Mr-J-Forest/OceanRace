@@ -88,32 +88,22 @@ def _roll_forecast_std(
     predictor: ElementForecastPredictor,
     x_std: torch.Tensor,
     target_steps: int,
+    overlap_steps: int,
+    enable_overlap_blend: bool,
 ) -> torch.Tensor:
-    """滚动预测（标准化空间）：循环回灌直到 target_steps。"""
-    if target_steps <= 0:
-        raise ValueError("target_steps must be > 0")
-
-    cur_x = x_std.clone()
-    chunks: list[torch.Tensor] = []
-    got = 0
-    in_steps = int(predictor.input_steps)
-
-    while got < target_steps:
-        out = predictor.predict(cur_x, denormalize=False, return_cpu=False)
-        pred_std = out["pred"].float()
-        if pred_std.ndim != 5:
-            raise RuntimeError("predictor output shape is invalid")
-
-        take = min(target_steps - got, int(pred_std.shape[1]))
-        chunks.append(pred_std[:, :take])
-        got += take
-        if got >= target_steps:
-            break
-
-        cat = torch.cat([cur_x.float(), pred_std], dim=1)
-        cur_x = cat[:, -in_steps:].contiguous()
-
-    return torch.cat(chunks, dim=1)
+    """滚动预测（标准化空间）：支持重叠融合以降低块边界跳变。"""
+    out = predictor.predict_long_horizon(
+        x=x_std,
+        target_steps=target_steps,
+        overlap_steps=overlap_steps,
+        enable_overlap_blend=enable_overlap_blend,
+        denormalize=False,
+        return_cpu=False,
+    )
+    pred_std = out["pred"].float()
+    if pred_std.ndim != 5:
+        raise RuntimeError("predictor output shape is invalid")
+    return pred_std
 
 
 def _build_single_file_subset(
@@ -392,6 +382,13 @@ def main() -> None:
     ap.add_argument("--horizon-hours-threshold", type=float, default=72.0)
     ap.add_argument("--mse-percent-threshold", type=float, default=15.0)
     ap.add_argument("--open-file-lru-size", type=int, default=16)
+    ap.add_argument("--overlap-steps", type=int, default=None, help="滚动推理重叠步数（默认读取 train.yaml，缺省 4）")
+    ap.add_argument(
+        "--enable-overlap-blend",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="是否启用重叠线性融合（默认读取 train.yaml，缺省开启）",
+    )
     ap.add_argument("--max-batches", type=int, default=0, help="仅评估前 N 个 batch；0 表示全部")
     ap.add_argument("--max-plot-vars", type=int, default=4)
     ap.add_argument(
@@ -451,6 +448,12 @@ def main() -> None:
         eval_steps = max(model_output_steps, req_steps)
 
     rolling_iters = int(math.ceil(eval_steps / max(model_output_steps, 1)))
+    overlap_steps = int(args.overlap_steps if args.overlap_steps is not None else train_cfg.get("overlap_steps", 4))
+    overlap_steps = max(0, overlap_steps)
+    if args.enable_overlap_blend is None:
+        enable_overlap_blend = bool(train_cfg.get("overlap_blend_enabled", True))
+    else:
+        enable_overlap_blend = bool(args.enable_overlap_blend)
 
     data_file = _resolve_path(args.data_file, default=train_cfg.get("data_file"))
     if data_file is None:
@@ -499,6 +502,7 @@ def main() -> None:
     _log.info(f"🔢 Windows  : {split_stats['selected']} selected (Split: {args.split})")
     _log.info(f"⏱️  Steps    : {input_steps} (in) -> {eval_steps} (out total)")
     _log.info(f"🌀 Rollout  : Approx {rolling_iters} autoregressive loops per window")
+    _log.info(f"🧩 Blend    : enabled={enable_overlap_blend} overlap_steps={overlap_steps}")
     _log.info("=" * 60)
 
     eps = 1e-12
@@ -526,7 +530,13 @@ def main() -> None:
             y_std = batch["y"].float().to(compute_device, non_blocking=True)
             y_valid = batch["y_valid"].float().to(compute_device, non_blocking=True)
 
-            pred_std = _roll_forecast_std(predictor, x_std=x, target_steps=eval_steps)
+            pred_std = _roll_forecast_std(
+                predictor,
+                x_std=x,
+                target_steps=eval_steps,
+                overlap_steps=overlap_steps,
+                enable_overlap_blend=enable_overlap_blend,
+            )
             pred = _destandardize_batch(pred_std, var_names=var_names, norm=norm)
             target = _destandardize_batch(y_std, var_names=var_names, norm=norm)
             mask = y_valid

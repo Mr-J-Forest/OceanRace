@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -76,11 +77,64 @@ def _collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
 	}
 
 
+def _scheduled_sampling_epsilon(
+	*,
+	epoch: int,
+	total_epochs: int,
+	enabled: bool,
+	start_epoch: int,
+	epsilon_start: float,
+	epsilon_min: float,
+	decay_type: str,
+) -> float:
+	if not enabled:
+		return 1.0
+	if epoch < start_epoch:
+		return float(epsilon_start)
+	epsilon_start = float(max(0.0, min(1.0, epsilon_start)))
+	epsilon_min = float(max(0.0, min(1.0, epsilon_min)))
+	if epsilon_start <= epsilon_min:
+		return epsilon_min
+
+	span = max(1, total_epochs - start_epoch)
+	progress = min(1.0, max(0.0, (epoch - start_epoch + 1) / span))
+	if decay_type == "cosine":
+		factor = 0.5 * (1.0 + torch.cos(torch.tensor(progress * torch.pi)).item())
+		epsilon = epsilon_min + (epsilon_start - epsilon_min) * factor
+	else:
+		epsilon = epsilon_start - (epsilon_start - epsilon_min) * progress
+	return float(max(epsilon_min, min(epsilon_start, epsilon)))
+
+
+def _mix_rollout_input(
+	*,
+	pred_chunk: torch.Tensor,
+	target_chunk: torch.Tensor,
+	epsilon: float,
+	enabled: bool,
+) -> torch.Tensor:
+	if not enabled:
+		return target_chunk
+	if epsilon >= 1.0:
+		return target_chunk
+	if epsilon <= 0.0:
+		return pred_chunk
+	bsz = pred_chunk.shape[0]
+	gate = (torch.rand(bsz, 1, 1, 1, 1, device=pred_chunk.device) < float(epsilon)).float()
+	return gate * target_chunk + (1.0 - gate) * pred_chunk
+
+
 def run_training(args: argparse.Namespace) -> None:
 	root = Path(__file__).resolve().parents[2]
 	data_cfg = _load_yaml(args.data_config)
 	model_cfg = _load_yaml(args.model_config)
 	train_cfg = _load_yaml(args.train_config)
+	# Suppress a known PyTorch transformer warning that is harmless for this model and clutters console output.
+	warnings.filterwarnings(
+		"ignore",
+		message="enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True",
+		category=UserWarning,
+	)
 
 	core = resolve_core_config(
 		args_var_names=args.var_names,
@@ -92,7 +146,9 @@ def run_training(args: argparse.Namespace) -> None:
 	)
 	var_names = core["var_names"]
 	input_steps = core["input_steps"]
-	output_steps = core["output_steps"]
+	model_output_steps = core["output_steps"]
+	rollout_steps = max(1, int(train_cfg.get("rollout_steps", 1)))
+	train_target_steps = int(model_output_steps * rollout_steps)
 	window_stride = core["window_stride"]
 	open_file_lru_size = int(train_cfg.get("open_file_lru_size", train_cfg.get("dataset_cache_max_files", 16)))
 	open_file_lru_size = max(1, open_file_lru_size)
@@ -135,7 +191,7 @@ def run_training(args: argparse.Namespace) -> None:
 		data_file=data_file,
 		var_names=var_names,
 		input_steps=input_steps,
-		output_steps=output_steps,
+		output_steps=train_target_steps,
 		window_stride=window_stride,
 		open_file_lru_size=open_file_lru_size,
 		split="train",
@@ -147,7 +203,7 @@ def run_training(args: argparse.Namespace) -> None:
 		data_file=data_file,
 		var_names=var_names,
 		input_steps=input_steps,
-		output_steps=output_steps,
+		output_steps=model_output_steps,
 		window_stride=window_stride,
 		open_file_lru_size=open_file_lru_size,
 		split="val",
@@ -168,6 +224,18 @@ def run_training(args: argparse.Namespace) -> None:
 		torch.backends.cudnn.allow_tf32 = True
 		torch.backends.cudnn.benchmark = True
 		torch.set_float32_matmul_precision("high")
+	rollout_gamma = float(train_cfg.get("rollout_gamma", 1.0))
+	rollout_gamma = max(0.0, min(1.0, rollout_gamma))
+	rollout_detach_between_steps = bool(train_cfg.get("rollout_detach_between_steps", False))
+	ss_enabled = bool(train_cfg.get("scheduled_sampling_enabled", False))
+	ss_start_epoch = max(1, int(train_cfg.get("scheduled_sampling_start_epoch", 1)))
+	ss_epsilon_start = float(train_cfg.get("scheduled_sampling_epsilon_start", 1.0))
+	ss_epsilon_min = float(train_cfg.get("scheduled_sampling_epsilon_min", 0.3))
+	ss_decay_type = str(train_cfg.get("scheduled_sampling_decay_type", "linear")).strip().lower()
+	progress_bar_enabled = bool(train_cfg.get("progress_bar_enabled", True))
+	progress_bar_mininterval = float(train_cfg.get("progress_bar_mininterval", 1.5))
+	progress_bar_mininterval = max(0.2, progress_bar_mininterval)
+	progress_bar_leave = bool(train_cfg.get("progress_bar_leave", False))
 	pin_memory = str(device).startswith("cuda")
 	persistent_workers = num_workers > 0
 	loader_kwargs = {
@@ -198,7 +266,7 @@ def run_training(args: argparse.Namespace) -> None:
 	model = HybridElementForecastModel(
 		in_channels=in_channels,
 		input_steps=input_steps,
-		output_steps=output_steps,
+		output_steps=model_output_steps,
 		d_model=int(model_cfg.get("d_model", 128)),
 		nhead=int(model_cfg.get("nhead", 4)),
 		num_layers=int(model_cfg.get("num_layers", 6)),
@@ -234,50 +302,112 @@ def run_training(args: argparse.Namespace) -> None:
 	history: list[dict[str, float]] = []
 
 	_log.info(
-		"start training | vars=%s | input_steps=%d | output_steps=%d | data_file=%s | split=(%.3f,%.3f,%.3f) | channels=%d | grad_accum=%d | amp=%s | train_windows=%d | val_windows=%d | open_file_lru_size=%d | var_loss_weights=%s | loss_spatial_mean_weight=%.3f | loss_aux_spatial_mean_weight=%.3f",
+		"start training | vars=%s | in/out=%d/%d | rollout=%d(gamma=%.2f) | ss=%s(eps %.2f->%.2f) | amp=%s",
 		list(var_names),
 		input_steps,
-		output_steps,
+		model_output_steps,
+		rollout_steps,
+		rollout_gamma,
+		ss_enabled,
+		ss_epsilon_start,
+		ss_epsilon_min,
+		amp_enabled,
+	)
+	_log.info(
+		"data=%s | split=(%.2f,%.2f,%.2f) | windows train/val=%d/%d | batch=%d accum=%d workers=%d",
 		str(data_file),
 		train_ratio,
 		val_ratio,
 		test_ratio,
-		in_channels,
-		grad_accum_steps,
-		amp_enabled,
 		len(train_ds),
 		len(val_ds),
+		batch_size,
+		grad_accum_steps,
+		num_workers,
+	)
+	_log.debug(
+		"details | open_file_lru_size=%d | var_loss_weights=%s | loss_spatial_mean_weight=%.3f | loss_aux_spatial_mean_weight=%.3f | rollout_detach_between_steps=%s | ss_start_epoch=%d | progress_bar_enabled=%s mininterval=%.2f leave=%s",
 		open_file_lru_size,
 		{v: float(var_loss_weights_cfg.get(v, 1.0)) for v in var_names},
 		loss_spatial_mean_weight,
 		loss_aux_spatial_mean_weight,
+		rollout_detach_between_steps,
+		ss_start_epoch,
+		progress_bar_enabled,
+		progress_bar_mininterval,
+		progress_bar_leave,
 	)
 
 	for epoch in range(1, epochs + 1):
 		model.train()
 		train_loss_sum = 0.0
 		train_count = 0
+		epsilon = _scheduled_sampling_epsilon(
+			epoch=epoch,
+			total_epochs=epochs,
+			enabled=ss_enabled,
+			start_epoch=ss_start_epoch,
+			epsilon_start=ss_epsilon_start,
+			epsilon_min=ss_epsilon_min,
+			decay_type=ss_decay_type,
+		)
 		optimizer.zero_grad(set_to_none=True)
+		pbar_disable = (not progress_bar_enabled)
+		desc = f"epoch {epoch}/{epochs}"
 		with tqdm_logging():
-			for step, batch in enumerate(tqdm(train_loader, desc=f"epoch {epoch}/{epochs} train"), start=1):
+			for step, batch in enumerate(
+				tqdm(
+					train_loader,
+					desc=desc,
+					disable=pbar_disable,
+					leave=progress_bar_leave,
+					mininterval=progress_bar_mininterval,
+					dynamic_ncols=True,
+				),
+				start=1,
+			):
 				x = batch["x"].to(device).nan_to_num(0.0)
 				y = batch["y"].to(device).nan_to_num(0.0)
 				y_valid = batch["y_valid"].to(device)
 				try:
 					with torch.amp.autocast(amp_device_type, enabled=amp_enabled):
-						out = model(x)
-						pred = out["pred"]
-						pred_transformer = out["pred_transformer"]
-						loss_main = masked_weighted_mse(pred, y, y_valid, channel_weights=channel_weights)
-						loss_aux = masked_weighted_mse(pred_transformer, y, y_valid, channel_weights=channel_weights)
-						loss_main_mean = masked_spatial_mean_mse(pred, y, y_valid, channel_weights=channel_weights)
-						loss_aux_mean = masked_spatial_mean_mse(pred_transformer, y, y_valid, channel_weights=channel_weights)
-						loss = (
-							loss_main_weight * loss_main
-							+ loss_aux_transformer_weight * loss_aux
-							+ loss_spatial_mean_weight * loss_main_mean
-							+ loss_aux_spatial_mean_weight * loss_aux_mean
-						)
+						cur_x = x
+						rollout_loss = x.new_zeros((), dtype=torch.float32)
+						weight_sum = 0.0
+						for rollout_idx in range(rollout_steps):
+							t0 = rollout_idx * model_output_steps
+							t1 = t0 + model_output_steps
+							y_chunk = y[:, t0:t1]
+							y_valid_chunk = y_valid[:, t0:t1]
+
+							out = model(cur_x)
+							pred = out["pred"]
+							pred_transformer = out["pred_transformer"]
+							loss_main = masked_weighted_mse(pred, y_chunk, y_valid_chunk, channel_weights=channel_weights)
+							loss_aux = masked_weighted_mse(pred_transformer, y_chunk, y_valid_chunk, channel_weights=channel_weights)
+							loss_main_mean = masked_spatial_mean_mse(pred, y_chunk, y_valid_chunk, channel_weights=channel_weights)
+							loss_aux_mean = masked_spatial_mean_mse(pred_transformer, y_chunk, y_valid_chunk, channel_weights=channel_weights)
+							step_loss = (
+								loss_main_weight * loss_main
+								+ loss_aux_transformer_weight * loss_aux
+								+ loss_spatial_mean_weight * loss_main_mean
+								+ loss_aux_spatial_mean_weight * loss_aux_mean
+							)
+							w = rollout_gamma ** rollout_idx
+							rollout_loss = rollout_loss + (w * step_loss)
+							weight_sum += w
+
+							if rollout_idx < rollout_steps - 1:
+								next_pred = pred.detach() if rollout_detach_between_steps else pred
+								mixed = _mix_rollout_input(
+									pred_chunk=next_pred,
+									target_chunk=y_chunk,
+									epsilon=epsilon,
+									enabled=ss_enabled and epoch >= ss_start_epoch,
+								)
+								cur_x = torch.cat([cur_x, mixed], dim=1)[:, -input_steps:].contiguous()
+
+						loss = rollout_loss / max(weight_sum, 1e-12)
 				except torch.OutOfMemoryError as ex:
 					if str(device).startswith("cuda"):
 						torch.cuda.empty_cache()
@@ -348,13 +478,14 @@ def run_training(args: argparse.Namespace) -> None:
 		}
 		history.append(epoch_record)
 		_log.info(
-			"epoch=%d train_loss=%.6f val_loss=%.6f val_rmse=%.6f val_mae=%.6f val_nse=%.6f",
+			"epoch=%d train_loss=%.6f val_loss=%.6f val_rmse=%.6f val_mae=%.6f val_nse=%.6f ss_epsilon=%.4f",
 			epoch,
 			train_loss,
 			val_loss,
 			metrics["rmse"],
 			metrics["mae"],
 			metrics["nse"],
+			epsilon,
 		)
 
 		if val_loss < best_val:
@@ -364,7 +495,7 @@ def run_training(args: argparse.Namespace) -> None:
 					"model_state": model.state_dict(),
 					"var_names": list(var_names),
 					"input_steps": input_steps,
-					"output_steps": output_steps,
+					"output_steps": model_output_steps,
 					"in_channels": in_channels,
 					"model_config": model_cfg,
 				},

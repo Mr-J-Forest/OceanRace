@@ -9,7 +9,11 @@ from element_forecasting.dataset import ElementForecastWindowDataset
 from element_forecasting.evaluator import masked_spatial_mean_mse, masked_weighted_mse
 from element_forecasting.model import HybridElementForecastModel
 from element_forecasting.predictor import ElementForecastPredictor
-from element_forecasting.trainer import resolve_core_config
+from element_forecasting.trainer import (
+    _mix_rollout_input,
+    _scheduled_sampling_epsilon,
+    resolve_core_config,
+)
 from tests.conftest import write_element_clean_nc
 
 
@@ -205,3 +209,89 @@ def test_weighted_and_spatial_mean_losses() -> None:
     # 空间均值与逐点一致（每通道常数场）
     loss_mean = masked_spatial_mean_mse(pred, target, mask, channel_weights=channel_weights)
     assert torch.allclose(loss_mean, torch.tensor(3.0), atol=1e-6)
+
+
+def test_scheduled_sampling_epsilon_decay() -> None:
+    e0 = _scheduled_sampling_epsilon(
+        epoch=1,
+        total_epochs=10,
+        enabled=True,
+        start_epoch=3,
+        epsilon_start=1.0,
+        epsilon_min=0.4,
+        decay_type="linear",
+    )
+    e_mid = _scheduled_sampling_epsilon(
+        epoch=6,
+        total_epochs=10,
+        enabled=True,
+        start_epoch=3,
+        epsilon_start=1.0,
+        epsilon_min=0.4,
+        decay_type="linear",
+    )
+    e_end = _scheduled_sampling_epsilon(
+        epoch=10,
+        total_epochs=10,
+        enabled=True,
+        start_epoch=3,
+        epsilon_start=1.0,
+        epsilon_min=0.4,
+        decay_type="linear",
+    )
+    assert e0 == 1.0
+    assert e_end <= e_mid <= e0
+    assert e_end >= 0.4
+
+
+def test_mix_rollout_input_endpoints() -> None:
+    pred = torch.zeros(2, 3, 1, 2, 2)
+    target = torch.ones(2, 3, 1, 2, 2)
+
+    out_tf = _mix_rollout_input(pred_chunk=pred, target_chunk=target, epsilon=1.0, enabled=True)
+    out_ar = _mix_rollout_input(pred_chunk=pred, target_chunk=target, epsilon=0.0, enabled=True)
+    out_disabled = _mix_rollout_input(pred_chunk=pred, target_chunk=target, epsilon=0.0, enabled=False)
+
+    assert torch.allclose(out_tf, target)
+    assert torch.allclose(out_ar, pred)
+    assert torch.allclose(out_disabled, target)
+
+
+def test_predictor_long_horizon_overlap_blend() -> None:
+    predictor = ElementForecastPredictor.__new__(ElementForecastPredictor)
+    predictor.device = torch.device("cpu")
+    predictor.input_steps = 6
+    predictor.output_steps = 6
+    predictor.var_names = ("sst",)
+    predictor._norm = None
+
+    calls = {"n": 0}
+
+    def fake_predict(x: torch.Tensor, denormalize: bool = False, return_cpu: bool = False):
+        base = float(calls["n"] * 10.0)
+        calls["n"] += 1
+        pred = torch.full((x.shape[0], 6, 1, 1, 1), base, dtype=torch.float32, device=x.device)
+        return {
+            "pred": pred,
+            "pred_transformer": pred,
+            "var_names": predictor.var_names,
+            "denormalized": denormalize,
+        }
+
+    predictor.predict = fake_predict  # type: ignore[method-assign]
+
+    x = torch.zeros(1, 6, 1, 1, 1)
+    out = predictor.predict_long_horizon(
+        x=x,
+        target_steps=10,
+        overlap_steps=4,
+        enable_overlap_blend=True,
+        denormalize=False,
+        return_cpu=True,
+    )
+    pred = out["pred"].squeeze(-1).squeeze(-1).squeeze(-1)
+    # 线性融合后，边界处不应出现从 0 直接跳到 10 的硬跳变。
+    assert pred.shape[1] == 10
+    assert float(pred[0, 2]) < float(pred[0, 5])
+    assert float(pred[0, 2]) == 0.0
+    assert float(pred[0, 3]) > 0.0
