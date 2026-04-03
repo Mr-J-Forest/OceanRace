@@ -1,3 +1,4 @@
-from .dataset import AnomalyCleanDataset
+from .dataset import AnomalyCleanDataset, AnomalyFrameDataset
+from .model import DualBranchAutoEncoder
 
-__all__ = ["AnomalyCleanDataset"]
+__all__ = ["AnomalyCleanDataset", "AnomalyFrameDataset", "DualBranchAutoEncoder"]

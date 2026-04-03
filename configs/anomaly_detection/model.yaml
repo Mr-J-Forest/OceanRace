@@ -1,2 +1,4 @@
-# 风-浪异常检测主模型超参数（待接入 src/anomaly_detection）
-# 示例：编码器维度、阈值策略相关等
+name: dual_branch_autoencoder
+oper_channels: 3
+wave_channels: 3
+base_channels: 24
