@@ -52,6 +52,26 @@ def load_dataset_info(data_path):
         traceback.print_exc()
         return gr.update(interactive=False), f"解析失败: {str(e)}"
 
+def extract_mask(mask_numpy, t_idx, c_idx, H, W):
+    if mask_numpy is None:
+        return None
+    # 判断掩码矩阵形状以兼容各种情况 (Static, T_only, C_only, or full T-C-H-W)
+    if mask_numpy.shape == (H, W):
+        return mask_numpy
+    elif mask_numpy.ndim == 3:
+        # (X, H, W) 这里的 X 可能是 T 也可能是 C. 因为我们有4个通道
+        # 若为 (4, H, W)，就当做各通道掩码
+        if mask_numpy.shape[0] == 4:
+            return mask_numpy[min(c_idx, 3)]
+        else:
+            return mask_numpy[min(t_idx, mask_numpy.shape[0] - 1)]
+    elif mask_numpy.ndim == 4:
+        # (T, C, H, W)
+        t_safe = min(t_idx, mask_numpy.shape[0] - 1)
+        c_safe = min(c_idx, mask_numpy.shape[1] - 1)
+        return mask_numpy[t_safe, c_safe]
+    return mask_numpy # 备用兜底
+
 def draw_spatial_plot(pred_numpy, mask_numpy, var_names, step_idx):
     fig, axs = plt.subplots(2, 2, figsize=(10, 8))
     fig.patch.set_facecolor('white') # 确保背景是干净的纯白
@@ -59,19 +79,16 @@ def draw_spatial_plot(pred_numpy, mask_numpy, var_names, step_idx):
     
     # 获取指定步长的数据: [variable, H, W]
     step_pred = pred_numpy[step_idx]
-    if mask_numpy is not None:
-        step_mask = mask_numpy[step_idx]
-    else:
-        step_mask = None
+    H, W = step_pred.shape[1], step_pred.shape[2]
         
     for i in range(min(4, step_pred.shape[0])):
         ax = axs[i]
         var_name = var_names[i]
         data_slice = step_pred[i].copy() # 拷贝以便修改
         
-        # 如果存在掩码，将被掩码屏蔽的陆地/缺测点设为 NaN
-        if step_mask is not None:
-            mask_slice = step_mask[i]
+        # 兼容性提取掩码片段
+        mask_slice = extract_mask(mask_numpy, step_idx, i, H, W)
+        if mask_slice is not None and mask_slice.shape == (H, W):
             data_slice[mask_slice < 0.5] = np.nan
         
         if var_name in ["SST", "海温"]:
@@ -117,6 +134,7 @@ def draw_curve_plot(pred_numpy, mask_numpy, var_names):
     
     num_steps = pred_numpy.shape[0]
     x_axis = np.arange(1, num_steps + 1) * 6  # 转换为小时
+    H, W = pred_numpy.shape[2], pred_numpy.shape[3]
     
     for i in range(min(4, pred_numpy.shape[1])):
         ax = axs[i]
@@ -125,8 +143,9 @@ def draw_curve_plot(pred_numpy, mask_numpy, var_names):
         mean_vals = []
         for t in range(num_steps):
             data_slice = pred_numpy[t, i]
-            if mask_numpy is not None:
-                mask_slice = mask_numpy[t, i]
+            
+            mask_slice = extract_mask(mask_numpy, t, i, H, W)
+            if mask_slice is not None and mask_slice.shape == (H, W):
                 valid_data = data_slice[mask_slice >= 0.5]
             else:
                 valid_data = data_slice[~np.isnan(data_slice)]
@@ -176,7 +195,7 @@ def element_forecasting_logic(model_path, data_path, start_idx):
         var_names = result.get("var_names", ["SST", "SSS", "SSU", "SSV"])
 
         valid_mask_tensor = sample.get("y_valid", None)
-        mask_numpy = valid_mask_tensor[0].numpy() if valid_mask_tensor is not None else None
+        mask_numpy = valid_mask_tensor.numpy() if valid_mask_tensor is not None else None
 
         state_dict = {
             "pred": pred_numpy,
