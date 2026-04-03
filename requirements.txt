@@ -5,8 +5,10 @@ netCDF4>=1.6
 PyYAML>=6.0
 tqdm>=4.66
 matplotlib>=3.7
+plotly>=5.0
 torch>=2.5.1
 statsmodels>=0.14
+pandas>=2.0
 gradio>=3.0
 
 # 开发 / CI
