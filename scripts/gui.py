@@ -19,16 +19,14 @@ from element_forecasting.predictor import ElementForecastPredictor
 from element_forecasting.dataset import ElementForecastWindowDataset
 from utils.visualization_defaults import apply_matplotlib_defaults
 
-def update_time_choices(data_path):
+def load_dataset_info(data_path):
     """
-    根据给定的 .nc 文件，解析其中的 time 维度，
-    并为能够作为起点的所有时间步生成 (真实时间字符串, 起始步) 选项供用户选择。
+    加载 .nc 文件，提取总有效切片数，更新 Slider 范围并展示首尾真实时间供用户参考，避免渲染几万个选项导致浏览器卡死。
     """
     if not os.path.exists(data_path):
-        return gr.update(choices=[], value=None, interactive=False, label="错误：未找到数据文件")
+        return gr.update(interactive=False), "错误：未找到数据文件"
         
     try:
-        # 为了获取正确的对应步数，我们实例化无分割的数据集
         dataset = ElementForecastWindowDataset(
             data_file=data_path,
             input_steps=12,
@@ -37,25 +35,22 @@ def update_time_choices(data_path):
         )
         
         if len(dataset) == 0:
-            return gr.update(choices=[], value=None, interactive=False, label="错误：数据集为空或步长不足")
+            return gr.update(interactive=False), "错误：数据集为空或步长不足"
             
         ds = xr.open_dataset(data_path)
         times = pd.to_datetime(ds['time'].values)
         
-        choices = []
-        for idx in range(len(dataset)):
-            # 获取该样本在真实大序列中的 t0 偏移整数
-            t0 = dataset._windows[idx]
-            t0_time = times[t0].strftime("%Y-%m-%d %H:%M:%S")
-            # Gradio 支持传元组 (label, value)，我们将显示的 label 设为真实时间
-            choices.append((f"Index {idx} | 起始时间: {t0_time}", int(idx)))
-            
-        # 默认选中第一个
-        return gr.update(choices=choices, value=choices[0][1], interactive=True, label="选择时间序列切片起始时间")
+        first_time = times[dataset._windows[0]].strftime("%Y-%m-%d %H:%M:%S")
+        last_time = times[dataset._windows[-1]].strftime("%Y-%m-%d %H:%M:%S")
+        
+        info = f"共提取到 {len(dataset)} 个可用预测窗口(Index 0 ~ {len(dataset)-1})。\n切片包含真实起点范围:\n第一步: {first_time}\n最后一步: {last_time}"
+        
+        # 将滑动条极值更新到位
+        return gr.update(maximum=len(dataset)-1, value=0, interactive=True), info
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return gr.update(choices=[], value=None, interactive=False, label=f"解析失败: {str(e)}")
+        return gr.update(interactive=False), f"解析失败: {str(e)}"
 
 def draw_spatial_plot(pred_numpy, mask_numpy, var_names, step_idx):
     fig, axs = plt.subplots(2, 2, figsize=(10, 8))
@@ -225,9 +220,10 @@ def create_gui():
                         model_input = gr.Textbox(value="models/forecast_model.pt", label="模型路径 (Checkpoint)")
                         with gr.Row():
                             data_input = gr.Textbox(value="data/processed/element_forecasting/示例数据.nc", label="测试输入数据序列路径 (.nc)")
-                            load_btn = gr.Button("加载时间供选", size="sm")
+                            load_btn = gr.Button("加载数据信息", size="sm")
                         
-                        time_idx_input = gr.Dropdown(choices=[], label="选择时间序列切片起始时间 (点击上方的加载获取)", interactive=True)
+                        time_idx_input = gr.Slider(minimum=0, maximum=100, step=1, value=0, label="拉动选择时间序列起点 (Index)", interactive=False)
+                        dataset_info = gr.Textbox(label="起点真实时间跨度参考", interactive=False, lines=3)
                         predict_btn = gr.Button("生成预测", variant="primary")
                         status_output = gr.Textbox(label="运行状态", interactive=False)
                         
@@ -244,9 +240,9 @@ def create_gui():
             
             # 点击"加载时间供选"，由更新逻辑读取 NC 文件并重绘选项
             load_btn.click(
-                fn=update_time_choices,
+                fn=load_dataset_info,
                 inputs=[data_input],
-                outputs=[time_idx_input]
+                outputs=[time_idx_input, dataset_info]
             )
             
             # 主生成逻辑，产生 state 和第一张图及趋势图
