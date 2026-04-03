@@ -119,6 +119,7 @@ def draw_spatial_plot(pred_numpy, mask_numpy, var_names, step_idx):
             zmin=vmin,
             zmax=vmax,
             showscale=True,
+            zsmooth="best",  # 开启双线性平滑插值，消除马赛克方块感
             colorbar=dict(
                 thickness=15, 
                 len=0.45, 
@@ -132,14 +133,15 @@ def draw_spatial_plot(pred_numpy, mask_numpy, var_names, step_idx):
         
         # 隐藏坐标轴，防止图表撑破或坐标网格影响海表观测
         fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False, row=row, col=col)
-        # 固定缩放比例消除拉伸并且隐藏边框
+        # 固定缩放比例消除拉伸，并翻转 Y 轴使 0 行在最上方（与气象图一致）
         fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False, 
+                         autorange="reversed", # 关键：翻转Y轴，修复上下颠倒
                          scaleanchor=f"x{i+1}" if i>0 else "x", scaleratio=1, row=row, col=col)
 
     fig.update_layout(
         height=800, 
-        paper_bgcolor='white', 
-        plot_bgcolor='#dddddd', # 利用透明NaN与深灰背景实现陆地等掩码效果
+        paper_bgcolor='rgba(0,0,0,0)', 
+        plot_bgcolor='rgba(0,0,0,0)', # 改为全透明，陆地部分将完美融入 Gradio 当前的主题背景（明/暗色自动适配）
         margin=dict(l=20, r=20, t=60, b=20)
     )
     return fig
@@ -185,10 +187,10 @@ def draw_curve_plot(pred_numpy, mask_numpy, var_names):
         )
         fig.add_trace(sc, row=row, col=col)
         
-        fig.update_xaxes(title_text="预报时间 (Hours)", showgrid=True, gridcolor='lightgray', row=row, col=col)
-        fig.update_yaxes(title_text=f"平均 {var_name}", showgrid=True, gridcolor='lightgray', row=row, col=col)
+        fig.update_xaxes(title_text="预报时间 (Hours)", showgrid=True, gridcolor='rgba(128,128,128,0.2)', row=row, col=col)
+        fig.update_yaxes(title_text=f"平均 {var_name}", showgrid=True, gridcolor='rgba(128,128,128,0.2)', row=row, col=col)
         
-    fig.update_layout(height=600, paper_bgcolor='white', plot_bgcolor='white')
+    fig.update_layout(height=600, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     return fig
 
 def element_forecasting_logic(model_path, data_path, start_idx):
