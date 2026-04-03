@@ -32,11 +32,13 @@ def load_dataset_info(data_path):
         return gr.update(interactive=False), "错误：未找到数据文件"
         
     try:
+        norm_path = "data/processed/normalization/element_forecasting_norm.json"
         dataset = ElementForecastWindowDataset(
             data_file=data_path,
             input_steps=24,
             output_steps=72,
-            split=None
+            split=None,
+            norm_stats_path=norm_path
         )
         
         if len(dataset) == 0:
@@ -204,8 +206,13 @@ def element_forecasting_logic(model_path, data_path, start_idx):
         return None, f"Error: 数据路径 {data_path} 不存在", empty_fig, empty_fig
     
     try:
+        norm_path = "data/processed/normalization/element_forecasting_norm.json"
         dataset = ElementForecastWindowDataset(
-            data_file=data_path, input_steps=24, output_steps=72, split=None
+            data_file=data_path, 
+            input_steps=24, 
+            output_steps=72, 
+            split=None,
+            norm_stats_path=norm_path
         )
 
         idx = int(start_idx)
@@ -216,7 +223,7 @@ def element_forecasting_logic(model_path, data_path, start_idx):
         x_tensor = sample["x"].unsqueeze(0)  
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        predictor = ElementForecastPredictor(checkpoint_path=model_path, device=device)
+        predictor = ElementForecastPredictor(checkpoint_path=model_path, device=device, norm_stats_path=norm_path)
 
         result = predictor.predict_long_horizon(
             x=x_tensor, 

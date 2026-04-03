@@ -22,13 +22,15 @@ def main():
     logger.info(f"Loading data from {nc_path}")
     
     input_steps = 24
-    output_steps = 24
+    output_steps = 72
+    norm_path = "data/processed/normalization/element_forecasting_norm.json"
     
     dataset = ElementForecastWindowDataset(
         data_file=nc_path,
         input_steps=input_steps,
         output_steps=output_steps,
-        split=None
+        split=None,
+        norm_stats_path=norm_path
     )
     
     if len(dataset) == 0:
@@ -50,10 +52,21 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Loading model {model_path} onto {device}")
     
-    predictor = ElementForecastPredictor(checkpoint_path=model_path, device=device)
+    predictor = ElementForecastPredictor(
+        checkpoint_path=model_path, 
+        device=device,
+        norm_stats_path=norm_path
+    )
     
-    logger.info("Running prediction...")
-    res = predictor.predict(x_tensor, denormalize=True, return_cpu=True)
+    logger.info("Running prediction with predict_long_horizon...")
+    res = predictor.predict_long_horizon(
+        x=x_tensor, 
+        target_steps=output_steps,
+        overlap_steps=4,
+        enable_overlap_blend=True,
+        denormalize=True, 
+        return_cpu=True
+    )
     
     pred_data = res["pred"][0].numpy() # shape: (output_steps, C, H, W)
     var_names = res.get("var_names", ["sst", "sss", "ssu", "ssv"])
@@ -97,12 +110,12 @@ def main():
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         ax.axis('off')
         
-    plt.suptitle("Element Forecasting Model Prediction - Last 24h Input", fontsize=16)
+    plt.suptitle(f"Element Forecasting Model Prediction - Last {output_steps}h Input", fontsize=16)
     plt.tight_layout()
     
     out_dir = os.path.join("outputs", "element_forecasting", "figures")
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "test_prediction_last_24h.png")
+    out_path = os.path.join(out_dir, f"test_prediction_last_{output_steps}h.png")
     
     fig.savefig(out_path, **standard_savefig_kwargs())
     logger.info(f"Saved plotting to {out_path}")
