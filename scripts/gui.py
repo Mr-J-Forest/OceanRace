@@ -2,6 +2,8 @@ import os
 import sys
 import torch
 import numpy as np
+import pandas as pd
+import xarray as xr
 import matplotlib.pyplot as plt
 
 try:
@@ -17,70 +19,199 @@ from element_forecasting.predictor import ElementForecastPredictor
 from element_forecasting.dataset import ElementForecastWindowDataset
 from utils.visualization_defaults import apply_matplotlib_defaults
 
-def element_forecasting_logic(model_path, data_path, start_idx):
+def update_time_choices(data_path):
     """
-    接收模型路径、数据路径和数据窗口的起始索引，执行加载与推理，返回 Gradio 图表。
+    根据给定的 .nc 文件，解析其中的 time 维度，
+    并为能够作为起点的所有时间步生成 (真实时间字符串, 起始步) 选项供用户选择。
     """
-    if not os.path.exists(model_path):
-        return plt.figure(), f"Error: 模型路径 {model_path} 不存在"
     if not os.path.exists(data_path):
-        return plt.figure(), f"Error: 数据路径 {data_path} 不存在"
-    
-    try:
-        # 1. 设置本项目通用的高水平可视化画图默认风格
-        apply_matplotlib_defaults()
+        return gr.update(choices=[], value=None, interactive=False, label="错误：未找到数据文件")
         
-        # 修复 Matplotlib 图片中的中文显示问题 (方块/乱码)
-        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'PingFang SC', 'Arial Unicode MS', 'sans-serif']
-        plt.rcParams['axes.unicode_minus'] = False
-
-        # 2. 构建 Dataset 从 .nc 文件读取连续的步数
+    try:
+        # 为了获取正确的对应步数，我们实例化无分割的数据集
         dataset = ElementForecastWindowDataset(
             data_file=data_path,
             input_steps=12,
             output_steps=12,
-            split=None  # 不自动切分集
+            split=None
+        )
+        
+        if len(dataset) == 0:
+            return gr.update(choices=[], value=None, interactive=False, label="错误：数据集为空或步长不足")
+            
+        ds = xr.open_dataset(data_path)
+        times = pd.to_datetime(ds['time'].values)
+        
+        choices = []
+        for idx in range(len(dataset)):
+            # 获取该样本在真实大序列中的 t0 偏移整数
+            t0 = dataset._windows[idx]
+            t0_time = times[t0].strftime("%Y-%m-%d %H:%M:%S")
+            # Gradio 支持传元组 (label, value)，我们将显示的 label 设为真实时间
+            choices.append((f"Index {idx} | 起始时间: {t0_time}", int(idx)))
+            
+        # 默认选中第一个
+        return gr.update(choices=choices, value=choices[0][1], interactive=True, label="选择时间序列切片起始时间")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return gr.update(choices=[], value=None, interactive=False, label=f"解析失败: {str(e)}")
+
+def draw_spatial_plot(pred_numpy, mask_numpy, var_names, step_idx):
+    fig, axs = plt.subplots(2, 2, figsize=(10, 8))
+    fig.patch.set_facecolor('white') # 确保背景是干净的纯白
+    axs = axs.flatten()
+    
+    # 获取指定步长的数据: [variable, H, W]
+    step_pred = pred_numpy[step_idx]
+    if mask_numpy is not None:
+        step_mask = mask_numpy[step_idx]
+    else:
+        step_mask = None
+        
+    for i in range(min(4, step_pred.shape[0])):
+        ax = axs[i]
+        var_name = var_names[i]
+        data_slice = step_pred[i].copy() # 拷贝以便修改
+        
+        # 如果存在掩码，将被掩码屏蔽的陆地/缺测点设为 NaN
+        if step_mask is not None:
+            mask_slice = step_mask[i]
+            data_slice[mask_slice < 0.5] = np.nan
+        
+        if var_name in ["SST", "海温"]:
+            cmap_name = "coolwarm"
+        elif var_name in ["SSS", "盐度"]:
+            cmap_name = "viridis"
+        else:
+            cmap_name = "RdBu_r"
+            
+        cmap = plt.get_cmap(cmap_name).copy()
+        cmap.set_bad(color='#dddddd')
+        
+        valid_data = data_slice[~np.isnan(data_slice)]
+        if len(valid_data) > 0:
+            vmin, vmax = np.percentile(valid_data, [1, 99])
+        else:
+            vmin, vmax = None, None
+
+        im = ax.imshow(
+            data_slice, 
+            cmap=cmap, 
+            origin="lower", 
+            interpolation="bilinear", 
+            vmin=vmin, 
+            vmax=vmax
+        )
+        
+        # 将步长转化为大约的小时数 (假设 dt=6h，预报12步即 72h)
+        ax.set_title(f"{var_name} (预测步: {step_idx+1}, +{(step_idx+1)*6}H)", pad=10)
+        ax.grid(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    
+    plt.tight_layout()
+    return fig
+
+def draw_curve_plot(pred_numpy, mask_numpy, var_names):
+    # 绘制随时间变化的区域平均曲线
+    fig, axs = plt.subplots(2, 2, figsize=(10, 6))
+    fig.patch.set_facecolor('white')
+    axs = axs.flatten()
+    
+    num_steps = pred_numpy.shape[0]
+    x_axis = np.arange(1, num_steps + 1) * 6  # 转换为小时
+    
+    for i in range(min(4, pred_numpy.shape[1])):
+        ax = axs[i]
+        var_name = var_names[i]
+        
+        mean_vals = []
+        for t in range(num_steps):
+            data_slice = pred_numpy[t, i]
+            if mask_numpy is not None:
+                mask_slice = mask_numpy[t, i]
+                valid_data = data_slice[mask_slice >= 0.5]
+            else:
+                valid_data = data_slice[~np.isnan(data_slice)]
+                
+            mean_vals.append(np.mean(valid_data) if len(valid_data) > 0 else np.nan)
+            
+        ax.plot(x_axis, mean_vals, marker='o', linestyle='-', linewidth=2, color='tab:blue')
+        ax.set_title(f"{var_name} 预测期海区均值变化", pad=10)
+        ax.set_xlabel("预报时间 (Hours)")
+        ax.set_ylabel(f"平均 {var_name}")
+        ax.grid(True, linestyle="--", alpha=0.6)
+        
+    plt.tight_layout()
+    return fig
+
+def element_forecasting_logic(model_path, data_path, start_idx):
+    """
+    执行推理的核心逻辑，计算所有步长，并返回状态（以供滑动条切换）以及默认初始视图。
+    """
+    empty_fig = plt.figure()
+    if not os.path.exists(model_path):
+        return None, f"Error: 模型路径 {model_path} 不存在", empty_fig, empty_fig
+    if not os.path.exists(data_path):
+        return None, f"Error: 数据路径 {data_path} 不存在", empty_fig, empty_fig
+    
+    try:
+        apply_matplotlib_defaults()
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'PingFang SC', 'Arial Unicode MS', 'sans-serif']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        dataset = ElementForecastWindowDataset(
+            data_file=data_path, input_steps=12, output_steps=12, split=None
         )
 
-        # 3. 获取特定的一个数据切片窗口并整理为推理适用的 (1, input_steps, Channels, H, W)
         idx = int(start_idx)
         if idx < 0 or idx >= len(dataset):
-            return plt.figure(), f"Error: 起始步 {idx} 超出数据集范围 (0 to {len(dataset)-1})"
+            return None, f"Error: 起始步超出范围", empty_fig, empty_fig
 
         sample = dataset[idx]
         x_tensor = sample["x"].unsqueeze(0)  
 
-        # 4. 加载 ElementForecastPredictor 推理预测器
         device = "cuda" if torch.cuda.is_available() else "cpu"
         predictor = ElementForecastPredictor(checkpoint_path=model_path, device=device)
 
-        # 5. 调用 predict() 执行推理
-        # denormalize=True 意味着自动尝试根据 normalization json 反归一化为真实物理值
         result = predictor.predict(x_tensor, denormalize=True, return_cpu=True)
-        pred_tensor = result["pred"]
+        pred_numpy = result["pred"][0].numpy()  # shape: (output_steps, Channels, H, W)
         var_names = result.get("var_names", ["SST", "SSS", "SSU", "SSV"])
 
-        # 6. 使用 Matplotlib 进行可视化展示 (展示预测结果中的第1步各物理通道)
-        fig, axs = plt.subplots(2, 2, figsize=(10, 8))
-        axs = axs.flatten()
+        valid_mask_tensor = sample.get("y_valid", None)
+        mask_numpy = valid_mask_tensor[0].numpy() if valid_mask_tensor is not None else None
+
+        state_dict = {
+            "pred": pred_numpy,
+            "mask": mask_numpy,
+            "vars": var_names
+        }
         
-        # 维度还原: [batch=0, step=0, variable, H, W]
-        first_step_pred = pred_tensor[0, 0].numpy()
+        # 初始视图，默认绘制第 1 步 (step_idx = 0)
+        spatial_fig = draw_spatial_plot(pred_numpy, mask_numpy, var_names, 0)
+        # 绘制整个预报期的 72 小时变化曲线
+        curve_fig = draw_curve_plot(pred_numpy, mask_numpy, var_names)
         
-        for i in range(min(4, first_step_pred.shape[0])):
-            ax = axs[i]
-            im = ax.imshow(first_step_pred[i], cmap="viridis", origin="lower")
-            ax.set_title(f"预测第 1 步: {var_names[i]}")
-            fig.colorbar(im, ax=ax)
-        
-        plt.tight_layout()
-        
-        return fig, "预测成功！上方展示本次序列输入后，模型对第1步(Step 1)四要素的联合预测结果。"
+        msg = f"预测成功！生成了未来 {pred_numpy.shape[0]} 步的多变量预报结果。"
+        return state_dict, msg, spatial_fig, curve_fig
         
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return plt.figure(), f"Error: 发生异常 {str(e)}"
+        return None, f"Error: {str(e)}", empty_fig, empty_fig
+
+def update_spatial_plot(state_dict, step_val):
+    if not state_dict:
+        return plt.figure()
+    
+    pred_numpy = state_dict["pred"]
+    mask_numpy = state_dict["mask"]
+    var_names = state_dict["vars"]
+    
+    step_idx = int(step_val) - 1 # Slider 从 1 开始，数组索引从 0 开始
+    return draw_spatial_plot(pred_numpy, mask_numpy, var_names, step_idx)
 
 def create_gui():
     with gr.Blocks(title="OceanRace 智能海洋分析系统 UI") as app:
@@ -88,20 +219,48 @@ def create_gui():
         gr.Markdown("包含三大核心模块：海洋要素短临预报、海洋中尺度涡旋检测、极端异常事件检测")
         
         with gr.Tab("要素预测 (Element Forecasting)"):
-            with gr.Row():
-                with gr.Column():
-                    model_input = gr.Textbox(value="models/forecast_model.pt", label="模型路径 (Checkpoint)")
-                    data_input = gr.Textbox(value="data/processed/element_forecasting/示例数据.nc", label="测试输入数据序列路径 (.nc)")
-                    idx_input = gr.Number(value=0, label="时间序列切片起始步 (Index)", precision=0)
-                    predict_btn = gr.Button("加载数据并生成预测", variant="primary")
-                with gr.Column():
-                    status_output = gr.Textbox(label="运行状态", interactive=False)
-                    plot_output = gr.Plot(label="要素场预测可视化 (首步)")
+            with gr.Column():
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        model_input = gr.Textbox(value="models/forecast_model.pt", label="模型路径 (Checkpoint)")
+                        with gr.Row():
+                            data_input = gr.Textbox(value="data/processed/element_forecasting/示例数据.nc", label="测试输入数据序列路径 (.nc)")
+                            load_btn = gr.Button("加载时间供选", size="sm")
+                        
+                        time_idx_input = gr.Dropdown(choices=[], label="选择时间序列切片起始时间 (点击上方的加载获取)", interactive=True)
+                        predict_btn = gr.Button("生成预测", variant="primary")
+                        status_output = gr.Textbox(label="运行状态", interactive=False)
+                        
+                    with gr.Column(scale=2):
+                        # 添加隐藏状态保存推理输出的数值
+                        prediction_state = gr.State()
+                        
+                        with gr.Tabs():
+                            with gr.Tab("空间分布预报 (多要素 2D 场)"):
+                                step_slider = gr.Slider(minimum=1, maximum=12, step=1, value=1, label="滑动切换预测步长 (1步 = 6小时, 最大12步即72小时)", interactive=True)
+                                plot_output = gr.Plot(label="要素场预测可视化")
+                            with gr.Tab("区域平均趋势 (72小时变化线)"):
+                                curve_plot = gr.Plot(label="海区平均物理量变化趋势")
             
+            # 点击"加载时间供选"，由更新逻辑读取 NC 文件并重绘选项
+            load_btn.click(
+                fn=update_time_choices,
+                inputs=[data_input],
+                outputs=[time_idx_input]
+            )
+            
+            # 主生成逻辑，产生 state 和第一张图及趋势图
             predict_btn.click(
                 fn=element_forecasting_logic,
-                inputs=[model_input, data_input, idx_input],
-                outputs=[plot_output, status_output]
+                inputs=[model_input, data_input, time_idx_input],
+                outputs=[prediction_state, status_output, plot_output, curve_plot]
+            )
+            
+            # 当滑动条的值改变时，免运行推理，直接使用现有的 state 重新进行绘制返回
+            step_slider.change(
+                fn=update_spatial_plot,
+                inputs=[prediction_state, step_slider],
+                outputs=[plot_output]
             )
             
         with gr.Tab("涡旋检测 (Eddy Detection)"):
