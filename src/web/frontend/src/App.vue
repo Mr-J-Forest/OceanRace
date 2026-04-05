@@ -202,6 +202,104 @@
         </main>
       </section>
 
+      <section v-else-if="activeModule === 'anomaly'" class="h-full flex gap-6">
+        <aside class="w-[380px] glass-panel flex flex-col h-full shrink-0 p-5 gap-4 overflow-y-auto custom-scrollbar">
+          <h2 class="panel-title"><ShieldAlert class="w-5 h-5 text-tech-cyan" /> ANOMALY INSPECTOR</h2>
+
+          <div class="space-y-2">
+            <label class="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Labels JSON</label>
+            <input type="text" v-model="anomalyLabelsPath" class="tech-input" />
+          </div>
+
+          <div class="space-y-2">
+            <label class="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Events JSON</label>
+            <input type="text" v-model="anomalyEventsPath" class="tech-input" />
+          </div>
+
+          <div class="space-y-2">
+            <label class="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Manifest JSON</label>
+            <input type="text" v-model="anomalyManifestPath" class="tech-input" />
+          </div>
+
+          <div class="space-y-2">
+            <label class="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Split</label>
+            <select v-model="anomalySplit" class="tech-input">
+              <option value="train">train</option>
+              <option value="val">val</option>
+              <option value="test">test</option>
+            </select>
+          </div>
+
+          <button class="tech-btn primary-btn w-full flex items-center justify-center gap-2" @click="loadAnomalyOverview">
+            <Search class="w-4 h-4" /> LOAD LABELS & HITS
+          </button>
+
+          <p v-if="anomalyError" class="text-xs text-rose-400 font-mono leading-relaxed">{{ anomalyError }}</p>
+          <p v-if="anomalyLoading" class="text-xs text-tech-cyan font-mono animate-pulse">LOADING ANOMALY POINTS...</p>
+        </aside>
+
+        <main class="flex-1 glass-panel p-5 overflow-hidden flex flex-col min-w-0">
+          <div class="flex items-center gap-3 mb-4">
+            <Database class="w-5 h-5 text-tech-cyan" />
+            <h2 class="font-display text-lg tracking-widest text-white m-0">异常点与事件命中</h2>
+          </div>
+
+          <div v-if="!anomalyData" class="flex-1 flex items-center justify-center text-slate-500 font-mono text-sm tracking-widest">
+            请先加载 labels/events
+          </div>
+
+          <template v-else>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-700">
+                <div class="text-[10px] text-slate-400 font-mono">SAMPLES</div>
+                <div class="text-xl text-white font-mono">{{ anomalyData.num_samples }}</div>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-700">
+                <div class="text-[10px] text-slate-400 font-mono">POSITIVE</div>
+                <div class="text-xl text-amber-400 font-mono">{{ anomalyData.num_positive }}</div>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-700">
+                <div class="text-[10px] text-slate-400 font-mono">MATCHED_POSITIVE</div>
+                <div class="text-xl text-emerald-400 font-mono">{{ anomalyData.matched_positive }}</div>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-700">
+                <div class="text-[10px] text-slate-400 font-mono">EVENTS_HIT</div>
+                <div class="text-xl text-tech-cyan font-mono">{{ anomalyData.matched_event_count }}</div>
+              </div>
+            </div>
+
+            <div class="text-xs text-slate-400 font-mono mb-2">
+              split={{ anomalyData.split }} | positive_ratio={{ (anomalyData.positive_ratio * 100).toFixed(2) }}% | matched_positive_ratio={{ (anomalyData.matched_positive_ratio * 100).toFixed(2) }}%
+            </div>
+
+            <div class="flex-1 overflow-auto custom-scrollbar border border-slate-800 rounded-lg">
+              <table class="w-full text-xs font-mono">
+                <thead class="sticky top-0 bg-slate-900 text-slate-300">
+                  <tr>
+                    <th class="text-left p-2 border-b border-slate-800">index</th>
+                    <th class="text-left p-2 border-b border-slate-800">timestamp</th>
+                    <th class="text-left p-2 border-b border-slate-800">matched</th>
+                    <th class="text-left p-2 border-b border-slate-800">event_hits</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="pt in anomalyData.points" :key="`${pt.index}-${pt.timestamp}`" class="odd:bg-slate-900/30">
+                    <td class="p-2 border-b border-slate-800/60">{{ pt.index }}</td>
+                    <td class="p-2 border-b border-slate-800/60">{{ pt.timestamp }}</td>
+                    <td class="p-2 border-b border-slate-800/60">
+                      <span :class="pt.matched ? 'text-emerald-400' : 'text-amber-400'">{{ pt.matched ? 'yes' : 'no' }}</span>
+                    </td>
+                    <td class="p-2 border-b border-slate-800/60">{{ (pt.event_hits || []).join(', ') || '-' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div v-if="anomalyData.truncated" class="mt-2 text-[10px] text-amber-400 font-mono">结果已截断显示，请提高后端 max_points。</div>
+          </template>
+        </main>
+      </section>
+
       <!-- Placeholder Page -->
       <section v-else class="h-full flex items-center justify-center">
         <div class="glass-panel p-10 max-w-lg text-center relative overflow-hidden group">
@@ -258,6 +356,14 @@ let playInterval = null
 const colorRangeCache = new Map()
 
 const API_BASE = 'http://localhost:8000/api'
+
+const anomalyLabelsPath = ref('outputs/anomaly_detection/labels_competition.json')
+const anomalyEventsPath = ref('outputs/anomaly_detection/events_competition.json')
+const anomalyManifestPath = ref('data/processed/splits/anomaly_detection_competition.json')
+const anomalySplit = ref('test')
+const anomalyLoading = ref(false)
+const anomalyError = ref('')
+const anomalyData = ref(null)
 const currentTime = ref(new Date().toISOString().substring(11, 19))
 const STEP_HOURS = 1
 
@@ -344,6 +450,26 @@ const runPrediction = async () => {
     alert(`核心推理引擎故障: ${err.response?.data?.detail || err.message}`)
   } finally {
     predicting.value = false
+  }
+}
+
+const loadAnomalyOverview = async () => {
+  anomalyLoading.value = true
+  anomalyError.value = ''
+  try {
+    const res = await axios.post(`${API_BASE}/anomaly/inspect`, {
+      labels_json: anomalyLabelsPath.value,
+      events_json: anomalyEventsPath.value,
+      manifest_path: anomalyManifestPath.value,
+      split: anomalySplit.value,
+      max_points: 300
+    })
+    anomalyData.value = res.data
+  } catch (err) {
+    anomalyError.value = err.response?.data?.detail || err.message || '加载失败'
+    anomalyData.value = null
+  } finally {
+    anomalyLoading.value = false
   }
 }
 

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import sys
+import json
 import torch
 import numpy as np
 import pandas as pd
@@ -15,6 +16,7 @@ sys.path.insert(0, PROJECT_ROOT) # adds root
 
 from src.element_forecasting.predictor import ElementForecastPredictor
 from src.element_forecasting.dataset import ElementForecastWindowDataset
+from src.anomaly_detection.dataset import AnomalyFrameDataset
 
 app = FastAPI(title="OceanRace Backend API")
 
@@ -40,8 +42,31 @@ class PredictRequest(BaseModel):
     data_path: str
     start_idx: int
 
+
+class AnomalyInspectRequest(BaseModel):
+    labels_json: str
+    events_json: str
+    manifest_path: str = "data/processed/splits/anomaly_detection_competition.json"
+    processed_dir: str = "data/processed/anomaly_detection"
+    norm_stats_path: str = "data/processed/normalization/anomaly_detection_norm.json"
+    split: str = "test"
+    open_file_lru_size: int = 32
+    max_points: int = 200
+
 # In-memory store for the last prediction to serve slices efficiently
 prediction_cache = {}
+
+
+def _to_epoch_seconds(ts_raw: int) -> int:
+    t = int(ts_raw)
+    at = abs(t)
+    if at >= 10**17:
+        return t // 10**9
+    if at >= 10**14:
+        return t // 10**6
+    if at >= 10**11:
+        return t // 10**3
+    return t
 
 @app.get("/api/default-data-path")
 def get_default_data_path():
@@ -216,6 +241,125 @@ def get_prediction_curve(session_id: str):
         })
         
     return {"data": response_data}
+
+
+@app.post("/api/anomaly/inspect")
+def inspect_anomaly(req: AnomalyInspectRequest):
+    split = str(req.split).strip().lower()
+    if split not in {"train", "val", "test"}:
+        raise HTTPException(status_code=400, detail="split must be one of train/val/test")
+
+    labels_path = resolve_path(req.labels_json.strip('"\''))
+    events_path = resolve_path(req.events_json.strip('"\''))
+    manifest_path = resolve_path(req.manifest_path.strip('"\''))
+    processed_dir = resolve_path(req.processed_dir.strip('"\''))
+    norm_stats_path = resolve_path(req.norm_stats_path.strip('"\''))
+
+    if not os.path.exists(labels_path):
+        raise HTTPException(status_code=404, detail=f"labels file not found: {labels_path}")
+    if not os.path.exists(events_path):
+        raise HTTPException(status_code=404, detail=f"events file not found: {events_path}")
+    if not os.path.exists(manifest_path):
+        raise HTTPException(status_code=404, detail=f"manifest file not found: {manifest_path}")
+
+    try:
+        labels_obj = json.loads(open(labels_path, "r", encoding="utf-8").read())
+        events_obj = json.loads(open(events_path, "r", encoding="utf-8").read())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"invalid json: {e}")
+
+    if not isinstance(labels_obj, dict):
+        raise HTTPException(status_code=400, detail="labels_json must be an object with split keys")
+
+    split_labels_raw = labels_obj.get(split)
+    if not isinstance(split_labels_raw, list):
+        raise HTTPException(status_code=400, detail=f"labels_json missing list for split={split}")
+
+    labels = [1 if int(v) == 1 else 0 for v in split_labels_raw]
+
+    events: list[dict] = []
+    if isinstance(events_obj, list):
+        for ev in events_obj:
+            if not isinstance(ev, dict):
+                continue
+            if "start" not in ev or "end" not in ev:
+                continue
+            try:
+                start = int(ev["start"])
+                end = int(ev["end"])
+            except Exception:
+                continue
+            if end < start:
+                continue
+            events.append({"name": str(ev.get("name", "event")), "start": start, "end": end})
+
+    ds = AnomalyFrameDataset(
+        processed_anomaly_dir=processed_dir,
+        split=split,
+        manifest_path=manifest_path,
+        norm_stats_path=norm_stats_path if os.path.exists(norm_stats_path) else None,
+        open_file_lru_size=max(0, int(req.open_file_lru_size)),
+    )
+    try:
+        timestamps: list[int] = []
+        n = len(ds)
+        for i in range(n):
+            sample = ds[i]
+            ts = int(sample.get("timestamp", -1))
+            timestamps.append(_to_epoch_seconds(ts))
+    finally:
+        ds.close()
+
+    n_pair = min(len(labels), len(timestamps))
+    if n_pair == 0:
+        raise HTTPException(status_code=400, detail="empty split after loading labels/timestamps")
+
+    if len(labels) != len(timestamps):
+        # Keep service usable even when lengths mismatch.
+        labels = labels[:n_pair]
+        timestamps = timestamps[:n_pair]
+
+    def _hit_events(ts: int) -> list[str]:
+        if ts < 0:
+            return []
+        return [ev["name"] for ev in events if ev["start"] <= ts <= ev["end"]]
+
+    positive_points: list[dict] = []
+    matched_positive = 0
+    matched_event_names: set[str] = set()
+
+    for idx, (y, ts) in enumerate(zip(labels, timestamps)):
+        if y != 1:
+            continue
+        hits = _hit_events(ts)
+        if hits:
+            matched_positive += 1
+            matched_event_names.update(hits)
+        positive_points.append(
+            {
+                "index": idx,
+                "timestamp": ts,
+                "event_hits": hits,
+                "matched": bool(hits),
+            }
+        )
+
+    max_points = max(1, int(req.max_points))
+    preview = positive_points[:max_points]
+
+    return {
+        "split": split,
+        "num_samples": n_pair,
+        "num_positive": int(sum(labels)),
+        "positive_ratio": float(sum(labels) / n_pair),
+        "num_events": len(events),
+        "matched_positive": matched_positive,
+        "matched_positive_ratio": float(matched_positive / max(1, sum(labels))),
+        "matched_event_count": len(matched_event_names),
+        "points": preview,
+        "truncated": len(positive_points) > len(preview),
+        "labels_timestamps_aligned": len(split_labels_raw) == len(timestamps),
+    }
 
 if __name__ == "__main__":
     import uvicorn
