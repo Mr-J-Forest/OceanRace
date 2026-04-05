@@ -153,7 +153,7 @@ def _rollout_predict_with_overlap(
 	cursor_start = 0
 
 	while out_seq is None or out_seq.shape[1] < target_steps:
-		pred_chunk = model(cur_x)["pred"].float()
+		pred_chunk = model(cur_x)["pred"]
 
 		if out_seq is None:
 			out_seq = pred_chunk
@@ -176,7 +176,7 @@ def _rollout_predict_with_overlap(
 
 		feed_steps = min(stride, pred_chunk.shape[1])
 		feed = pred_chunk[:, :feed_steps]
-		cur_x = torch.cat([cur_x.float(), feed], dim=1)[:, -input_steps:].contiguous()
+		cur_x = torch.cat([cur_x, feed.to(dtype=cur_x.dtype)], dim=1)[:, -input_steps:].contiguous()
 		cursor_start += stride
 
 	assert out_seq is not None
@@ -373,6 +373,11 @@ def run_training(args: argparse.Namespace) -> None:
 		raise SystemExit("train dataset is empty; check data file and split/time-window settings")
 
 	batch_size = int(args.batch_size if args.batch_size is not None else train_cfg.get("batch_size", 2))
+	val_batch_size = int(
+		args.val_batch_size
+		if args.val_batch_size is not None
+		else train_cfg.get("val_batch_size", max(1, min(batch_size, 2)))
+	)
 	num_workers = int(args.num_workers if args.num_workers is not None else train_cfg.get("num_workers", 0))
 	device = args.device or train_cfg.get("device", "auto")
 	if device == "auto":
@@ -414,7 +419,7 @@ def run_training(args: argparse.Namespace) -> None:
 	)
 	val_loader = DataLoader(
 		val_ds,
-		batch_size=batch_size,
+		batch_size=val_batch_size,
 		shuffle=False,
 		collate_fn=_collate,
 		**loader_kwargs,
@@ -477,7 +482,53 @@ def run_training(args: argparse.Namespace) -> None:
 	best_val = float("inf")
 	best_val_nrmse_percent = float("inf")
 	best_path = ckpt_dir / "hybrid_best.pt"
+	last_path = ckpt_dir / "hybrid_last.pt"
 	history: list[dict[str, float]] = []
+	start_epoch = 1
+
+	resume_from_cfg = train_cfg.get("resume_from", None)
+	auto_resume_last_cfg = bool(train_cfg.get("auto_resume_last", False))
+	resume_from_arg = getattr(args, "resume_from", None)
+	auto_resume_last_arg = bool(getattr(args, "auto_resume_last", False))
+	resume_path: Path | None = None
+	if resume_from_arg:
+		resume_path = Path(str(resume_from_arg))
+	elif resume_from_cfg:
+		resume_path = Path(str(resume_from_cfg))
+	elif auto_resume_last_cfg or auto_resume_last_arg:
+		if last_path.is_file():
+			resume_path = last_path
+
+	if resume_path is not None:
+		if not resume_path.is_absolute():
+			resume_path = root / resume_path
+		if not resume_path.is_file():
+			raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+		resume_ckpt = torch.load(resume_path, map_location="cpu")
+		if "model_state" not in resume_ckpt:
+			raise KeyError(f"invalid resume checkpoint (missing model_state): {resume_path}")
+		model.load_state_dict(resume_ckpt["model_state"])
+		opt_state = resume_ckpt.get("optimizer_state")
+		if isinstance(opt_state, dict):
+			optimizer.load_state_dict(opt_state)
+		scaler_state = resume_ckpt.get("scaler_state")
+		if isinstance(scaler_state, dict):
+			scaler.load_state_dict(scaler_state)
+		best_val = float(resume_ckpt.get("best_val_loss", best_val))
+		best_val_nrmse_percent = float(resume_ckpt.get("best_val_nrmse_percent", best_val_nrmse_percent))
+		history_ckpt = resume_ckpt.get("history")
+		if isinstance(history_ckpt, list):
+			history = [row for row in history_ckpt if isinstance(row, dict)]
+		start_epoch = int(resume_ckpt.get("epoch", 0)) + 1
+		_log.info(
+			"resume enabled | checkpoint=%s | start_epoch=%d | best_val_loss=%.6f | best_val_nrmse=%.4f%%",
+			resume_path,
+			start_epoch,
+			best_val,
+			best_val_nrmse_percent,
+		)
+		if start_epoch > epochs:
+			_log.warning("resume checkpoint epoch exceeds requested epochs: start_epoch=%d epochs=%d", start_epoch, epochs)
 
 	_log.info(
 		"start training\n"
@@ -509,7 +560,8 @@ def run_training(args: argparse.Namespace) -> None:
 		"  split_ratio=(%.2f,%.2f,%.2f)\n"
 		"  split_years=%s\n"
 		"  windows train/val=%d/%d\n"
-		"  batch=%d\n"
+		"  train_batch=%d\n"
+		"  val_batch=%d\n"
 		"  grad_accum_steps=%d\n"
 		"  workers=%d",
 		str(data_file),
@@ -520,6 +572,7 @@ def run_training(args: argparse.Namespace) -> None:
 		len(train_ds),
 		len(val_ds),
 		batch_size,
+		val_batch_size,
 		grad_accum_steps,
 		num_workers,
 	)
@@ -543,7 +596,7 @@ def run_training(args: argparse.Namespace) -> None:
 		progress_bar_leave,
 	)
 
-	for epoch in range(1, epochs + 1):
+	for epoch in range(start_epoch, epochs + 1):
 		model.train()
 		train_loss_sum = 0.0
 		train_count = 0
@@ -684,36 +737,37 @@ def run_training(args: argparse.Namespace) -> None:
 				x = batch["x"].to(device)
 				y = batch["y"].to(device)
 				y_valid = batch["y_valid"].to(device)
-				loss = _rollout_composite_train_style_loss(
-					model=model,
-					x=x,
-					y=y,
-					y_valid=y_valid,
-					chunk_steps=model_output_steps,
-					rollout_gamma=rollout_gamma,
-					channel_weights=channel_weights,
-					region_weighting_enabled=region_weighting_enabled,
-					region_weight_base=region_weight_base,
-					region_weight_strength=region_weight_strength,
-					region_weight_quantile=region_weight_quantile,
-					loss_main_weight=loss_main_weight,
-					loss_aux_transformer_weight=loss_aux_transformer_weight,
-					loss_spatial_mean_weight=loss_spatial_mean_weight,
-					loss_aux_spatial_mean_weight=loss_aux_spatial_mean_weight,
-					loss_gradient_consistency_weight=loss_gradient_consistency_weight,
-					loss_edge_weight=loss_edge_weight,
-					edge_loss_type=edge_loss_type,
-					input_steps=input_steps,
-				)
-				pred = _rollout_predict_with_overlap(
-					model=model,
-					x=x,
-					input_steps=input_steps,
-					target_steps=int(y.shape[1]),
-					chunk_steps=model_output_steps,
-					overlap_steps=val_overlap_steps,
-					enable_overlap_blend=val_overlap_blend_enabled,
-				)
+				with torch.amp.autocast(amp_device_type, enabled=amp_enabled):
+					loss = _rollout_composite_train_style_loss(
+						model=model,
+						x=x,
+						y=y,
+						y_valid=y_valid,
+						chunk_steps=model_output_steps,
+						rollout_gamma=rollout_gamma,
+						channel_weights=channel_weights,
+						region_weighting_enabled=region_weighting_enabled,
+						region_weight_base=region_weight_base,
+						region_weight_strength=region_weight_strength,
+						region_weight_quantile=region_weight_quantile,
+						loss_main_weight=loss_main_weight,
+						loss_aux_transformer_weight=loss_aux_transformer_weight,
+						loss_spatial_mean_weight=loss_spatial_mean_weight,
+						loss_aux_spatial_mean_weight=loss_aux_spatial_mean_weight,
+						loss_gradient_consistency_weight=loss_gradient_consistency_weight,
+						loss_edge_weight=loss_edge_weight,
+						edge_loss_type=edge_loss_type,
+						input_steps=input_steps,
+					)
+					pred = _rollout_predict_with_overlap(
+						model=model,
+						x=x,
+						input_steps=input_steps,
+						target_steps=int(y.shape[1]),
+						chunk_steps=model_output_steps,
+						overlap_steps=val_overlap_steps,
+						enable_overlap_blend=val_overlap_blend_enabled,
+					)
 				bs = x.size(0)
 				val_loss_sum += float(loss.item()) * bs
 				val_count += bs
@@ -795,6 +849,24 @@ def run_training(args: argparse.Namespace) -> None:
 			)
 			_log.info("new best checkpoint saved by nrmse_percent=%.4f%%: %s", best_val_nrmse_percent, best_path)
 
+		torch.save(
+			{
+				"epoch": int(epoch),
+				"model_state": model.state_dict(),
+				"optimizer_state": optimizer.state_dict(),
+				"scaler_state": scaler.state_dict(),
+				"best_val_loss": float(best_val),
+				"best_val_nrmse_percent": float(best_val_nrmse_percent),
+				"history": history,
+				"var_names": list(var_names),
+				"input_steps": input_steps,
+				"output_steps": model_output_steps,
+				"in_channels": in_channels,
+				"model_config": model_cfg,
+			},
+			last_path,
+		)
+
 	(metrics_dir / "train_history.json").write_text(
 		json.dumps(history, ensure_ascii=False, indent=2),
 		encoding="utf-8",
@@ -821,10 +893,13 @@ def main() -> None:
 	ap.add_argument("--window-stride", type=int, default=None)
 	ap.add_argument("--epochs", type=int, default=None)
 	ap.add_argument("--batch-size", type=int, default=None)
+	ap.add_argument("--val-batch-size", type=int, default=None)
 	ap.add_argument("--lr", type=float, default=None)
 	ap.add_argument("--num-workers", type=int, default=None)
 	ap.add_argument("--device", type=str, default=None)
 	ap.add_argument("--output-dir", type=str, default=None)
+	ap.add_argument("--resume-from", type=str, default=None, help="从指定 checkpoint 继续训练")
+	ap.add_argument("--auto-resume-last", action="store_true", help="若存在 outputs/.../checkpoints/hybrid_last.pt，则自动续训")
 	args = ap.parse_args()
 	run_training(args)
 

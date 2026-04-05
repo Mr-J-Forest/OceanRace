@@ -48,10 +48,11 @@
 1. 支持 AMP、梯度累积、多进程 DataLoader。
 2. 支持 spatial_downsample 以降低空间 token 数和显存压力。
 3. 训练损失由主损失、Transformer 辅助损失、空间均值约束、梯度一致性与边缘损失组成；当前默认 `loss_gradient_consistency_weight=0.12`、`loss_edge_weight=0.03(sobel)`。
-4. 训练采用 rollout 多段监督；默认 `rollout_steps=3`、`rollout_gamma=1.0`，即 24h x 3 段对齐 72h 目标。
+4. 训练默认采用 72→72 直接监督；默认 `rollout_steps=1`、`rollout_gamma=1.0`。
 5. Scheduled Sampling 默认从首个 epoch 开始，`epsilon` 由 `1.0` 按 cosine 衰减到 `0.08`，减轻训练-推理曝光偏差。
 6. 训练入口：scripts/04_train_forecast.py（默认走主模型；--baseline 走旧基线）。
-7. 当前推荐默认训练资源配置：`epochs=30`、`batch_size=8`、`num_workers=12`、`grad_accum_steps=4`（有效 batch 约为 32）。
+7. 当前推荐默认训练资源配置：`epochs=5`、`batch_size=8`、`val_batch_size=1`、`num_workers=12`、`grad_accum_steps=4`（验证默认采用更小 batch 以避免 72→72 OOM）。
+8. 支持断点续训：每轮会写 `outputs/element_forecasting/checkpoints/hybrid_last.pt`，可通过 `--resume-from` 或 `--auto-resume-last` 恢复模型、优化器、AMP scaler 与训练历史。
 
 ### 验证与最优模型选择（已对齐赛题）
 
@@ -63,6 +64,7 @@
 ## 关键配置
 
 1. 模型配置：configs/element_forecasting/model.yaml
+   - input_steps=72, output_steps=72
    - multi_scale_enabled=false（关闭辅助 patch=8 融合，先抑制插值格纹）
    - refine_head_hidden_ratio=1.5, refine_head_num_layers=4
    - d_model, nhead, num_layers, block_size, dropout, spatial_downsample
@@ -72,7 +74,8 @@
    - data_file, norm_stats_path
    - window_stride, split_mode, split_years
    - train_ratio, val_ratio, test_ratio（仅 split_mode=ratio 时生效）
-   - epochs, batch_size, lr, num_workers, device, amp, grad_accum_steps
+   - epochs, batch_size, val_batch_size, lr, num_workers, device, amp, grad_accum_steps
+   - resume_from, auto_resume_last
    - rollout_steps, rollout_gamma, val_target_steps
    - scheduled_sampling_start_epoch, scheduled_sampling_epsilon_start, scheduled_sampling_epsilon_min, scheduled_sampling_decay_type
    - overlap_blend_enabled, overlap_steps
@@ -83,4 +86,11 @@
 1. 大赛主指标：NRMSE (%)
    - 当前实现采用掩膜区域上的 `NRMSE = RMSE / (target_max - target_min) * 100`。
    - 训练验证日志与竞赛检查脚本均输出 `nrmse_percent`，并作为阈值对比与 best checkpoint 选择依据。
+2. 边缘区域指标（edge_rmse）
+   - 以目标梯度分位数构造边缘掩膜；当有效点过多时会自动做等步长采样后再计算分位数，避免 `torch.quantile` 在超大输入上的运行时错误。
+
+## 续训命令示例
+
+1. 从指定 checkpoint 继续：`python scripts/04_train_forecast.py --resume-from outputs/element_forecasting/checkpoints/hybrid_last.pt`
+2. 自动恢复最近一次 last checkpoint：`python scripts/04_train_forecast.py --auto-resume-last`
 
