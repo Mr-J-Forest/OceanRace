@@ -1,0 +1,174 @@
+{
+  "methods": {
+    "main_ae": {
+      "summary": {
+        "best_val_loss": 0.029181009740568697,
+        "best_threshold": 0.029533864930272102
+      },
+      "val": {
+        "anomaly_ratio": 0.1532258064516129,
+        "num_anomaly": 38,
+        "count": 248.0,
+        "labeled_metrics": {
+          "accuracy": 0.842741935483871,
+          "precision": 0.026315789472991694,
+          "recall": 0.3333333332222222,
+          "f1": 0.04878048766686496,
+          "far": 0.1510204081626489,
+          "tp": 1,
+          "tn": 208,
+          "fp": 37,
+          "fn": 2,
+          "threshold": 0.02799287810921669,
+          "auc": 0.782312925170068
+        }
+      },
+      "test": {
+        "anomaly_ratio": 0.12096774193548387,
+        "num_anomaly": 30,
+        "count": 248.0,
+        "labeled_metrics": {
+          "accuracy": 0.9395161290322581,
+          "precision": 0.5666666666477778,
+          "recall": 0.8947368420581717,
+          "f1": 0.6938775505172843,
+          "far": 0.05676855895171717,
+          "tp": 17,
+          "tn": 216,
+          "fp": 13,
+          "fn": 2,
+          "threshold": 0.02799287810921669,
+          "auc": 0.9800045966444495
+        }
+      }
+    },
+    "ae_baseline": {
+      "summary": {
+        "best_val_loss": 0.03444357728585601,
+        "best_threshold": 0.04108227789402008
+      },
+      "val": {
+        "anomaly_ratio": 0.1532258064516129,
+        "num_anomaly": 38,
+        "count": 248.0,
+        "labeled_metrics": {
+          "accuracy": 0.8588709677419355,
+          "precision": 0.07894736841897508,
+          "recall": 0.9999999996666666,
+          "f1": 0.146341463271862,
+          "far": 0.14285714285655976,
+          "tp": 3,
+          "tn": 210,
+          "fp": 35,
+          "fn": 0,
+          "threshold": 0.03870932012796402,
+          "auc": 0.9251700680272109
+        }
+      },
+      "test": {
+        "anomaly_ratio": 0.125,
+        "num_anomaly": 31,
+        "count": 248.0,
+        "labeled_metrics": {
+          "accuracy": 0.8548387096774194,
+          "precision": 0.22580645160561916,
+          "recall": 0.3684210526121884,
+          "f1": 0.2799999995176,
+          "far": 0.104803493449324,
+          "tp": 7,
+          "tn": 205,
+          "fp": 24,
+          "fn": 12,
+          "threshold": 0.03870932012796402,
+          "auc": 0.8848540565387267
+        }
+      }
+    },
+    "pca": {
+      "summary": {
+        "threshold": 0.00048404765951382927
+      },
+      "val": {
+        "anomaly_ratio": 0.0846774193548387,
+        "num_anomaly": 21,
+        "count": 248.0,
+        "labeled_metrics": {
+          "accuracy": 0.9032258064516129,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "far": 0.08571428571393587,
+          "tp": 0,
+          "tn": 224,
+          "fp": 21,
+          "fn": 3,
+          "threshold": 0.00048404765951382927,
+          "auc": 0.7346938775510204
+        }
+      },
+      "test": {
+        "anomaly_ratio": 0.04838709677419355,
+        "num_anomaly": 12,
+        "count": 248.0,
+        "labeled_metrics": {
+          "accuracy": 0.875,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "far": 0.052401746724662,
+          "tp": 0,
+          "tn": 217,
+          "fp": 12,
+          "fn": 19,
+          "threshold": 0.00048404765951382927,
+          "auc": 0.4543783038381981
+        }
+      }
+    },
+    "iforest": {
+      "summary": {
+        "threshold": 0.5344050593170041
+      },
+      "val": {
+        "anomaly_ratio": 0.012096774193548387,
+        "num_anomaly": 3,
+        "count": 248.0,
+        "labeled_metrics": {
+          "accuracy": 0.9758064516129032,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "far": 0.012244897959133695,
+          "tp": 0,
+          "tn": 242,
+          "fp": 3,
+          "fn": 3,
+          "threshold": 0.5344050593170041,
+          "auc": 0.6639455782312925
+        }
+      },
+      "test": {
+        "anomaly_ratio": 0.0846774193548387,
+        "num_anomaly": 21,
+        "count": 248.0,
+        "labeled_metrics": {
+          "accuracy": 0.9112903225806451,
+          "precision": 0.42857142855102043,
+          "recall": 0.47368421050138504,
+          "f1": 0.44999999947875,
+          "far": 0.052401746724662,
+          "tp": 9,
+          "tn": 217,
+          "fp": 12,
+          "fn": 10,
+          "threshold": 0.5344050593170041,
+          "auc": 0.7368421052631579
+        }
+      }
+    }
+  },
+  "notes": [
+    "If labeled_metrics are missing, labels are unavailable or not binary/aligned.",
+    "Without labels, anomaly_ratio/num_anomaly are unsupervised diagnostics only."
+  ]
+}
