@@ -9,6 +9,8 @@ open_file_lru_size: 0
 lr: 0.001
 device: auto
 threshold_quantile: 0.95
+lambda_cross: 0.2
+lambda_fuse: 0.05
 
 output_dir: outputs/anomaly_detection
 save_name: anomaly_ae_best.pt

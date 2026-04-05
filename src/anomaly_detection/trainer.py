@@ -45,9 +45,17 @@ def train_one_epoch(
 	loader: torch.utils.data.DataLoader,
 	optimizer: torch.optim.Optimizer,
 	device: torch.device | str,
+	*,
+	use_amp: bool,
+	scaler: torch.amp.GradScaler,
+	lambda_cross: float,
+	lambda_fuse: float,
 ) -> dict[str, float]:
 	model.train()
 	loss_sum = 0.0
+	loss_main_sum = 0.0
+	loss_cross_sum = 0.0
+	loss_fuse_sum = 0.0
 	cnt = 0
 	for batch in loader:
 		oper_x = batch["oper_x"].to(device).float().nan_to_num(0.0)
@@ -56,18 +64,46 @@ def train_one_epoch(
 		wave_v = batch["wave_valid"].to(device).float()
 
 		optimizer.zero_grad(set_to_none=True)
-		out = model(oper_x, wave_x)
-		loss_oper = masked_mse(out["oper_recon"], oper_x, oper_v)
-		loss_wave = masked_mse(out["wave_recon"], wave_x, wave_v)
-		loss = 0.5 * loss_oper + 0.5 * loss_wave
+		with torch.amp.autocast("cuda", enabled=use_amp):
+			out = model(oper_x, wave_x)
+			loss_oper_main = masked_mse(out["oper_recon"], oper_x, oper_v)
+			loss_wave_main = masked_mse(out["wave_recon"], wave_x, wave_v)
+			loss_main = 0.5 * loss_oper_main + 0.5 * loss_wave_main
+
+			oper_cross = out.get("oper_cross_recon", out["oper_recon"])
+			wave_cross = out.get("wave_cross_recon", out["wave_recon"])
+			loss_oper_cross = masked_mse(oper_cross, oper_x, oper_v)
+			loss_wave_cross = masked_mse(wave_cross, wave_x, wave_v)
+			loss_cross = 0.5 * loss_oper_cross + 0.5 * loss_wave_cross
+
+			if "oper_z" in out and "wave_z" in out:
+				loss_fuse = torch.mean((out["oper_z"] - out["wave_z"]) ** 2)
+			else:
+				loss_fuse = torch.tensor(0.0, device=oper_x.device)
+
+			loss = loss_main + float(lambda_cross) * loss_cross + float(lambda_fuse) * loss_fuse
 		if not torch.isfinite(loss):
 			continue
-		loss.backward()
-		optimizer.step()
+		if use_amp:
+			scaler.scale(loss).backward()
+			scaler.step(optimizer)
+			scaler.update()
+		else:
+			loss.backward()
+			optimizer.step()
 
 		loss_sum += float(loss.item())
+		loss_main_sum += float(loss_main.item())
+		loss_cross_sum += float(loss_cross.item())
+		loss_fuse_sum += float(loss_fuse.item())
 		cnt += 1
-	return {"loss": loss_sum / max(1, cnt)}
+	den = max(1, cnt)
+	return {
+		"loss": loss_sum / den,
+		"loss_main": loss_main_sum / den,
+		"loss_cross": loss_cross_sum / den,
+		"loss_fuse": loss_fuse_sum / den,
+	}
 
 
 @torch.no_grad()
@@ -75,9 +111,16 @@ def validate_one_epoch(
 	model: nn.Module,
 	loader: torch.utils.data.DataLoader,
 	device: torch.device | str,
+	*,
+	use_amp: bool,
+	lambda_cross: float,
+	lambda_fuse: float,
 ) -> dict[str, Any]:
 	model.eval()
 	loss_sum = 0.0
+	loss_main_sum = 0.0
+	loss_cross_sum = 0.0
+	loss_fuse_sum = 0.0
 	cnt = 0
 	all_err: list[np.ndarray] = []
 
@@ -87,21 +130,42 @@ def validate_one_epoch(
 		oper_v = batch["oper_valid"].to(device).float()
 		wave_v = batch["wave_valid"].to(device).float()
 
-		out = model(oper_x, wave_x)
-		loss_oper = masked_mse(out["oper_recon"], oper_x, oper_v)
-		loss_wave = masked_mse(out["wave_recon"], wave_x, wave_v)
-		loss = 0.5 * loss_oper + 0.5 * loss_wave
+		with torch.amp.autocast("cuda", enabled=use_amp):
+			out = model(oper_x, wave_x)
+			loss_oper_main = masked_mse(out["oper_recon"], oper_x, oper_v)
+			loss_wave_main = masked_mse(out["wave_recon"], wave_x, wave_v)
+			loss_main = 0.5 * loss_oper_main + 0.5 * loss_wave_main
+
+			oper_cross = out.get("oper_cross_recon", out["oper_recon"])
+			wave_cross = out.get("wave_cross_recon", out["wave_recon"])
+			loss_oper_cross = masked_mse(oper_cross, oper_x, oper_v)
+			loss_wave_cross = masked_mse(wave_cross, wave_x, wave_v)
+			loss_cross = 0.5 * loss_oper_cross + 0.5 * loss_wave_cross
+
+			if "oper_z" in out and "wave_z" in out:
+				loss_fuse = torch.mean((out["oper_z"] - out["wave_z"]) ** 2)
+			else:
+				loss_fuse = torch.tensor(0.0, device=oper_x.device)
+
+			loss = loss_main + float(lambda_cross) * loss_cross + float(lambda_fuse) * loss_fuse
 		if not torch.isfinite(loss):
 			continue
 
 		errs = batch_recon_error(oper_x, wave_x, out["oper_recon"], out["wave_recon"], oper_v, wave_v)
 		all_err.append(errs)
 		loss_sum += float(loss.item())
+		loss_main_sum += float(loss_main.item())
+		loss_cross_sum += float(loss_cross.item())
+		loss_fuse_sum += float(loss_fuse.item())
 		cnt += 1
 
 	errors = np.concatenate(all_err, axis=0) if all_err else np.array([], dtype=np.float32)
+	den = max(1, cnt)
 	return {
-		"loss": loss_sum / max(1, cnt),
+		"loss": loss_sum / den,
+		"loss_main": loss_main_sum / den,
+		"loss_cross": loss_cross_sum / den,
+		"loss_fuse": loss_fuse_sum / den,
 		"errors": errors,
 	}
 
@@ -113,6 +177,9 @@ class AnomalyTrainConfig:
 	batch_size: int = 8
 	num_workers: int = 0
 	device: str = "cuda" if torch.cuda.is_available() else "cpu"
+	use_amp: bool = True
+	lambda_cross: float = 0.2
+	lambda_fuse: float = 0.05
 	threshold_quantile: float = 0.95
 	output_dir: Path = Path("outputs/anomaly_detection")
 	save_name: str = "anomaly_ae_best.pt"
@@ -127,6 +194,13 @@ def fit(
 	device = torch.device(cfg.device)
 	model = model.to(device)
 	optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
+	use_amp = bool(cfg.use_amp and device.type == "cuda")
+	scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+	if device.type == "cuda":
+		torch.backends.cuda.matmul.allow_tf32 = True
+		torch.backends.cudnn.allow_tf32 = True
+		torch.backends.cudnn.benchmark = True
+		torch.set_float32_matmul_precision("high")
 
 	cfg.output_dir.mkdir(parents=True, exist_ok=True)
 	best_path = cfg.output_dir / cfg.save_name
@@ -136,13 +210,35 @@ def fit(
 	history: list[dict[str, float]] = []
 
 	for epoch in range(1, cfg.epochs + 1):
-		tr = train_one_epoch(model, train_loader, optimizer, device)
-		va = validate_one_epoch(model, val_loader, device)
+		tr = train_one_epoch(
+			model,
+			train_loader,
+			optimizer,
+			device,
+			use_amp=use_amp,
+			scaler=scaler,
+			lambda_cross=cfg.lambda_cross,
+			lambda_fuse=cfg.lambda_fuse,
+		)
+		va = validate_one_epoch(
+			model,
+			val_loader,
+			device,
+			use_amp=use_amp,
+			lambda_cross=cfg.lambda_cross,
+			lambda_fuse=cfg.lambda_fuse,
+		)
 		threshold = calibrate_threshold(va["errors"], cfg.threshold_quantile) if va["errors"].size else 0.0
 		row = {
 			"epoch": float(epoch),
 			"train_loss": float(tr["loss"]),
 			"val_loss": float(va["loss"]),
+			"train_loss_main": float(tr["loss_main"]),
+			"train_loss_cross": float(tr["loss_cross"]),
+			"train_loss_fuse": float(tr["loss_fuse"]),
+			"val_loss_main": float(va["loss_main"]),
+			"val_loss_cross": float(va["loss_cross"]),
+			"val_loss_fuse": float(va["loss_fuse"]),
 			"threshold": float(threshold),
 		}
 		history.append(row)

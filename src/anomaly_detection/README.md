@@ -120,3 +120,76 @@
 | `evaluator.py` | 准确率、AUC、误报率等 |
 
 具体超参数建议放在 `configs/anomaly_detection/model.yaml`（与 `train.yaml`）中维护。
+
+---
+
+## 训练与达标评估（实操）
+
+> 仅有重构误差与阈值统计，**不能**直接证明赛题“异常识别准确率 ≥80%”。
+> 必须提供标签（`labels_json`），并输出 `labeled_metrics`（accuracy/F1/AUC）。
+
+### 1) 训练（默认阈值策略）
+
+```bash
+python scripts/05_train_anomaly.py \
+	--device cuda \
+	--epochs 20 \
+	--batch-size 32 \
+	--num-workers 8 \
+	--open-file-lru-size 32 \
+	--report-splits val,test
+```
+
+### 2) 先生成标签/事件模板（一次性）
+
+```bash
+python scripts/05b_prepare_anomaly_eval_templates.py --force
+```
+
+将下面两个模板复制并填充真实标注后再用于评估：
+
+- `outputs/anomaly_detection/templates/labels.template.json`
+- `outputs/anomaly_detection/templates/events.template.json`
+
+`labels.template.json` 约定：
+
+- 键是 split（如 `val`、`test`）
+- 值是与样本数等长的数组，`0=normal`，`1=anomaly`
+
+`events.template.json` 约定：
+
+- 列表元素为 `{"name": ..., "start": int, "end": int}`
+- `start/end` 为时间戳整数，供台风事件关联评估使用
+
+### 3) 带标签评估 + 阈值调优（推荐）
+
+```bash
+python scripts/05_train_anomaly.py \
+	--device cuda \
+	--epochs 20 \
+	--batch-size 32 \
+	--num-workers 8 \
+	--open-file-lru-size 32 \
+	--report-splits val,test \
+	--labels-json outputs/anomaly_detection/labels.json \
+	--events-json outputs/anomaly_detection/events.json \
+	--threshold-policy val-f1 \
+	--threshold-quantiles 0.85,0.90,0.93,0.95,0.97,0.99
+```
+
+### 4) 新增阈值策略参数
+
+- `--threshold-policy model`：用训练得到的 best threshold（默认）
+- `--threshold-policy val-f1`：用 val 标签调阈值，最大化 F1
+- `--threshold-policy val-accuracy`：用 val 标签调阈值，最大化 accuracy
+- `--threshold-policy fixed --fixed-threshold <x>`：固定阈值复现实验
+
+### 5) 结果文件解读
+
+- `outputs/anomaly_detection/summary.json`
+	- 包含 `best_val_loss`、`best_threshold` 与 `threshold_info`
+- `outputs/anomaly_detection/split_reports.json`
+	- 无标签时：仅 `error_summary` + `detection`
+	- 有标签且长度匹配时：额外有 `labeled_metrics`（accuracy/F1/AUC）
+	- 有事件文件时：额外有 `event_association`
+

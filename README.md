@@ -17,7 +17,9 @@ OceanRace/
 │   ├── eddy_detection/        # 涡旋主模型 model.yaml / train.yaml
 │   ├── element_forecasting/   # 要素预报主模型（非基线）
 │   ├── anomaly_detection/     # 异常检测主模型
-│   └── baseline/element_forecasting/  # 要素基线（ConvLSTM）与主模型分离
+│   └── baseline/
+│       ├── element_forecasting/  # 要素基线（ConvLSTM）
+│       └── anomaly_detection/    # 异常检测基线（轻量双分支 AE）
 ├── data/                      # 通常不提交（.gitignore）
 │   ├── __init__.py
 │   ├── raw/                   # 原始 NetCDF，见 data/raw/README.md
@@ -36,7 +38,7 @@ OceanRace/
 │   ├── eddy_detection/        # 模块2：中尺度涡旋识别（含 dataset.py）
 │   ├── element_forecasting/   # 模块3：水文要素预测（含 dataset.py）
 │   ├── anomaly_detection/     # 模块4：风-浪异常识别（含 README、dataset.py）
-│   ├── baseline/              # 三任务基线（要素：ConvLSTM；其余占位）
+│   ├── baseline/              # 三任务基线（要素/异常已实现）
 │   │   ├── eddy_detection/
 │   │   ├── element_forecasting/   # convlstm、model、sequence_dataset、train
 │   │   └── anomaly_detection/
@@ -55,7 +57,7 @@ OceanRace/
 │   ├── smoke_element_forecast.py  # 要素基线极少样本冒烟
 │   ├── 03_train_eddy.py       # 涡旋训练（占位，待接 src/eddy_detection）
 │   ├── 04_train_forecast.py   # 要素预报训练
-│   ├── 05_train_anomaly.py    # 异常检测训练（占位）
+│   ├── 05_train_anomaly.py    # 异常检测训练（支持 --baseline）
 │   ├── 06_run_pipeline.py     # 端到端流水线（占位）
 │   └── 07_generate_report.py  # 评估报告（占位）
 ├── tests/                     # 单元测试（preprocessing、models、pipeline）
@@ -75,6 +77,7 @@ OceanRace/
 | `scripts/03_train_eddy.py` 等 | 训练/流水线/报告脚本（`03`–`07`）；要素预报用 `python scripts/04_train_forecast.py` |
 | `src/baseline/` | 基线实验代码（`PYTHONPATH=src`，如 `python -m baseline.element_forecasting.train`） |
 | `src/baseline/element_forecasting/README.md` | 要素 ConvLSTM 基线模块与运行方式 |
+| `src/baseline/anomaly_detection/README.md` | 异常检测轻量 AE 基线模块与运行方式 |
 | `src/utils/README.md` | 工具说明（logger、dataset_utils、可视化命令行） |
 | `data/raw/README.md` | 各任务 NetCDF 维度与坐标说明 |
 | `src/anomaly_detection/README.md` | 异常检测方法选型与说明 |
@@ -176,6 +179,10 @@ OceanRace/
 
 **风–浪网格不一致**：原始风场与浪场经纬格网不同（见 `data/raw/README.md`），预处理仍输出分文件的 `oper_clean.nc` / `wave_clean.nc`，**不在预处理阶段强行插值对齐**。建模可采用 **双分支网络**（风、浪各自卷积编码，在全局特征上融合），避免像素级对齐；亦可采用分开建模或先插值再联合，详见 [`src/anomaly_detection/README.md`](src/anomaly_detection/README.md)。
 
+**训练与评估入口脚本：** `scripts/05_train_anomaly.py`（已实现）
+
+**标签与事件模板：** `scripts/05b_prepare_anomaly_eval_templates.py`（已实现）
+
 **文件：** `dataset.py` · `model.py` · `trainer.py` · `detector.py` · `evaluator.py`
 
 | 文件 | 要点 |
@@ -188,6 +195,16 @@ OceanRace/
 
 **指标：** 目标准确率 ≥80%；实时检测；输出异常等级、置信度与关联信息。
 
+**重要说明（是否达标的前提）**
+
+- 若仅运行无监督检测（没有标签），可得到 `anomaly_ratio`、阈值与告警等级，但**不能**证明“准确率 ≥80%”。
+- 要输出 `Accuracy/Precision/Recall/F1/AUC`，必须提供 `labels.json`（0/1 标签，长度与 split 样本数一致）。
+- 要输出台风关联结果，必须提供 `events.json`（含事件 `start/end` 时间窗）。
+- 推荐流程：
+    1. 运行 `python scripts/05b_prepare_anomaly_eval_templates.py --force` 生成模板；
+    2. 填写 `outputs/anomaly_detection/labels.json` 与 `outputs/anomaly_detection/events.json`；
+    3. 运行 `python scripts/05_train_anomaly.py ... --labels-json ... --events-json ...` 输出监督指标与事件关联。
+
 | 类别 | 变量名或内容 | 说明 |
 |------|----------------|------|
 | **输入（风）** | `u10`、`v10` | `data_stream-oper_stepType-instant.nc`，`(valid_time, latitude, longitude)` |
@@ -198,7 +215,7 @@ OceanRace/
 | **输出（推理）** | `anomaly_score` 或重构误差序列 | 逐时次或逐格点 |
 | **输出（推理）** | `alert_level`、是否异常标志 | 离散等级 |
 | **输出（关联）** | `typhoon_flag` 或最近台风信息 | 可选 |
-| **输出（评估）** | Accuracy、Precision、Recall、AUC 等 | 相对标签 |
+| **输出（评估）** | Accuracy、Precision、Recall、F1、AUC 等 | 需提供 0/1 标签 |
 
 ---
 

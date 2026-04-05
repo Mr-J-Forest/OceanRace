@@ -69,17 +69,36 @@ class DualBranchAutoEncoder(nn.Module):
 		base_channels: int = 24,
 	):
 		super().__init__()
+		latent_dim = base_channels * 4
 		self.oper_branch = _BranchAE(in_channels=oper_channels, base_channels=base_channels)
 		self.wave_branch = _BranchAE(in_channels=wave_channels, base_channels=base_channels)
+		self.fusion_gate = nn.Sequential(
+			nn.Linear(latent_dim * 2, latent_dim),
+			nn.ReLU(inplace=True),
+			nn.Linear(latent_dim, latent_dim),
+			nn.Sigmoid(),
+		)
+		# Cross heads inject the other branch's latent signal into reconstruction.
+		self.oper_from_wave = nn.Linear(latent_dim, oper_channels)
+		self.wave_from_oper = nn.Linear(latent_dim, wave_channels)
 
 	def forward(self, oper_x: torch.Tensor, wave_x: torch.Tensor) -> dict[str, torch.Tensor]:
 		oper_recon, oper_z = self.oper_branch(oper_x)
 		wave_recon, wave_z = self.wave_branch(wave_x)
-		fused_z = torch.cat([oper_z, wave_z], dim=1)
+		gate = self.fusion_gate(torch.cat([oper_z, wave_z], dim=1))
+		fused_z = gate * oper_z + (1.0 - gate) * wave_z
+
+		oper_bias = self.oper_from_wave(wave_z).unsqueeze(-1).unsqueeze(-1)
+		wave_bias = self.wave_from_oper(oper_z).unsqueeze(-1).unsqueeze(-1)
+		oper_cross_recon = oper_recon + oper_bias
+		wave_cross_recon = wave_recon + wave_bias
 		return {
 			"oper_recon": oper_recon,
 			"wave_recon": wave_recon,
+			"oper_cross_recon": oper_cross_recon,
+			"wave_cross_recon": wave_cross_recon,
 			"oper_z": oper_z,
 			"wave_z": wave_z,
 			"fused_z": fused_z,
+			"fusion_gate": gate,
 		}

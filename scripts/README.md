@@ -14,12 +14,15 @@
 | `03_train_eddy.py` | 涡旋识别训练入口（**占位**，待接入 `src/eddy_detection/`） |
 | `04_train_forecast.py` | 要素预报训练入口（支持命令行覆盖参数） |
 | `run_element_baseline_train.py` | 要素预报基线训练，读取 `configs/baseline/element_forecasting/{model,train}.yaml` |
-| `05_train_anomaly.py` | 异常检测训练入口（**占位**） |
+| `05_train_anomaly.py` | 风-浪异常训练与评估（主模型/基线可切换，支持阈值策略、labels/events） |
+| `05b_prepare_anomaly_eval_templates.py` | 生成 anomaly 的 labels/events 模板（用于准确率/AUC与事件关联评估） |
+| `05c_compare_anomaly_methods.py` | 统一对比主模型、AE baseline、PCA、IsolationForest |
+| `05d_generate_anomaly_labels_from_ibtracs.py` | 从 IBTrACS 轨迹自动生成 labels/events（按样本 timestamp 对齐） |
 | `06_run_pipeline.py` | 端到端流水线（**占位**） |
 | `07_generate_report.py` | 评估报告生成（**占位**） |
 | `08_check_element_forecast_competition.py` | 要素预测比赛门槛检查（支持 12h 滚动到 72h + MSE≤15%），输出 PASS/FAIL JSON |
 
-除 `01`/`02` 外，`04_train_forecast.py` 已实现；其余多为预留入口。
+除 `01`/`02` 外，`04_train_forecast.py`、`05_train_anomaly.py`、`05b_prepare_anomaly_eval_templates.py`、`05c_compare_anomaly_methods.py` 已实现；其余多为预留入口。
 
 ---
 
@@ -132,9 +135,10 @@ python scripts/02_preprocess.py --task all --steps all --validate --validate-lim
 三任务基线代码在 **`src/baseline/<任务>/`**，与 `scripts/` 并列，需 **`PYTHONPATH=src`** 后以 **模块方式**运行（同样使用 `utils.logger` / `utils.dataset_utils` 等）。
 
 | 入口 | 说明 |
-| `python scripts/04_train_forecast.py` | 要素预报 **ConvLSTM** 基线训练（推荐，无需 PYTHONPATH） |
+| `python scripts/04_train_forecast.py` | 要素预报训练（主模型或 ConvLSTM 基线） |
 | `python -m baseline.element_forecasting.train` | 同上，模块方式（需 `PYTHONPATH=src`） |
-| `src/baseline/eddy_detection/`、`anomaly_detection/` | 占位，见各目录 `README.md` |
+| `python scripts/05_train_anomaly.py --baseline` | 异常检测轻量基线训练（双分支浅层 AE） |
+| `src/baseline/eddy_detection/` | 占位，见目录 `README.md` |
 
 示例（项目根目录）：
 
@@ -142,7 +146,7 @@ python scripts/02_preprocess.py --task all --steps all --validate --validate-lim
 python scripts/04_train_forecast.py --epochs 5 --batch-size 2 --help
 ```
 
-详见 **`src/baseline/element_forecasting/README.md`**。
+详见 **`src/baseline/element_forecasting/README.md`** 与 **`src/baseline/anomaly_detection/README.md`**。
 
 ---
 

@@ -9,8 +9,12 @@
 | `element_forecasting/` | **要素预报主模型**（非基线） |
 | `anomaly_detection/` | **异常检测主模型** |
 | `baseline/element_forecasting/` | **要素预报基线**（ConvLSTM），与主模型配置分离 |
+| `baseline/anomaly_detection/` | **异常检测基线**（轻量双分支 AE），与主模型配置分离 |
 
-基线训练入口：`scripts/run_element_baseline_train.py` → 读取 `baseline/element_forecasting/*.yaml`。
+基线训练入口：
+
+- `scripts/run_element_baseline_train.py` → 读取 `baseline/element_forecasting/*.yaml`
+- `scripts/05_train_anomaly.py --baseline` → 读取 `baseline/anomaly_detection/*.yaml`
 
 ---
 
