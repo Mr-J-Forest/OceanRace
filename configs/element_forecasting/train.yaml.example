@@ -10,7 +10,7 @@ var_names:
 # 数据来源
 processed_dir: data/processed/element_forecasting
 # 如果想要单文件模式：设置后优先使用该单文件（忽略 manifest/split）
-data_file: data/processed/element_forecasting/all_clean_merged.nc
+data_file: data/processed/element_forecasting/path.txt
 
 # 提供切分和标准化文件的路径
 manifest_path: data/processed/splits/element_forecasting.json

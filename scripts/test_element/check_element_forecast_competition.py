@@ -8,7 +8,7 @@
 
 示例：
   python scripts/test_element/check_element_forecast_competition.py \
-    --data-file data/processed/element_forecasting/all_clean_merged.nc \
+    --data-file data/processed/element_forecasting/path.txt \
     --split test --time-step-hours 1 --eval-horizon-hours 72
 """
 from __future__ import annotations
@@ -88,32 +88,22 @@ def _roll_forecast_std(
     predictor: ElementForecastPredictor,
     x_std: torch.Tensor,
     target_steps: int,
+    overlap_steps: int,
+    enable_overlap_blend: bool,
 ) -> torch.Tensor:
-    """滚动预测（标准化空间）：循环回灌直到 target_steps。"""
-    if target_steps <= 0:
-        raise ValueError("target_steps must be > 0")
-
-    cur_x = x_std.clone()
-    chunks: list[torch.Tensor] = []
-    got = 0
-    in_steps = int(predictor.input_steps)
-
-    while got < target_steps:
-        out = predictor.predict(cur_x, denormalize=False, return_cpu=False)
-        pred_std = out["pred"].float()
-        if pred_std.ndim != 5:
-            raise RuntimeError("predictor output shape is invalid")
-
-        take = min(target_steps - got, int(pred_std.shape[1]))
-        chunks.append(pred_std[:, :take])
-        got += take
-        if got >= target_steps:
-            break
-
-        cat = torch.cat([cur_x.float(), pred_std], dim=1)
-        cur_x = cat[:, -in_steps:].contiguous()
-
-    return torch.cat(chunks, dim=1)
+    """滚动预测（标准化空间）：支持重叠融合以降低块边界跳变。"""
+    out = predictor.predict_long_horizon(
+        x=x_std,
+        target_steps=target_steps,
+        overlap_steps=overlap_steps,
+        enable_overlap_blend=enable_overlap_blend,
+        denormalize=False,
+        return_cpu=False,
+    )
+    pred_std = out["pred"].float()
+    if pred_std.ndim != 5:
+        raise RuntimeError("predictor output shape is invalid")
+    return pred_std
 
 
 def _build_single_file_subset(
@@ -130,11 +120,11 @@ def _build_single_file_subset(
         return full_ds, {"total": n_total, "train": n_total, "val": 0, "test": 0, "selected": n_total}
 
     if not (0.0 < train_ratio < 1.0):
-        raise SystemExit("single_file_train_ratio must be in (0,1)")
+        raise SystemExit("train_ratio (or single_file_train_ratio) must be in (0,1)")
     if not (0.0 <= val_ratio < 1.0):
-        raise SystemExit("single_file_val_ratio must be in [0,1)")
+        raise SystemExit("val_ratio (or single_file_val_ratio) must be in [0,1)")
     if train_ratio + val_ratio >= 1.0:
-        raise SystemExit("single_file_train_ratio + single_file_val_ratio must be < 1")
+        raise SystemExit("train_ratio + val_ratio must be < 1")
 
     n_train = int(n_total * train_ratio)
     n_val = int(n_total * val_ratio)
@@ -296,14 +286,16 @@ def _plot_sample_map(
     sample_mask: torch.Tensor,
     var_name: str,
     time_step_hours: float,
+    channel_idx: int = 0,
 ) -> None:
     import matplotlib.pyplot as plt
 
     apply_matplotlib_defaults()
 
-    pred = sample_pred[-1, 0].float().cpu().numpy()
-    target = sample_target[-1, 0].float().cpu().numpy()
-    mask = sample_mask[-1, 0].float().cpu().numpy() > 0.5
+    pred = sample_pred[-1, channel_idx].float().cpu().numpy()
+    target = sample_target[-1, channel_idx].float().cpu().numpy()
+    mask_c = channel_idx if sample_mask.shape[1] > channel_idx else 0
+    mask = sample_mask[-1, mask_c].float().cpu().numpy() > 0.5
 
     pred = np.where(mask, pred, np.nan)
     target = np.where(mask, target, np.nan)
@@ -392,6 +384,13 @@ def main() -> None:
     ap.add_argument("--horizon-hours-threshold", type=float, default=72.0)
     ap.add_argument("--mse-percent-threshold", type=float, default=15.0)
     ap.add_argument("--open-file-lru-size", type=int, default=16)
+    ap.add_argument("--overlap-steps", type=int, default=None, help="滚动推理重叠步数（默认读取 train.yaml，缺省 4）")
+    ap.add_argument(
+        "--enable-overlap-blend",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="是否启用重叠线性融合（默认读取 train.yaml，缺省开启）",
+    )
     ap.add_argument("--max-batches", type=int, default=0, help="仅评估前 N 个 batch；0 表示全部")
     ap.add_argument("--max-plot-vars", type=int, default=4)
     ap.add_argument(
@@ -451,6 +450,12 @@ def main() -> None:
         eval_steps = max(model_output_steps, req_steps)
 
     rolling_iters = int(math.ceil(eval_steps / max(model_output_steps, 1)))
+    overlap_steps = int(args.overlap_steps if args.overlap_steps is not None else train_cfg.get("overlap_steps", 4))
+    overlap_steps = max(0, overlap_steps)
+    if args.enable_overlap_blend is None:
+        enable_overlap_blend = bool(train_cfg.get("overlap_blend_enabled", True))
+    else:
+        enable_overlap_blend = bool(args.enable_overlap_blend)
 
     data_file = _resolve_path(args.data_file, default=train_cfg.get("data_file"))
     if data_file is None:
@@ -458,38 +463,25 @@ def main() -> None:
     if not data_file.is_file():
         raise SystemExit(f"single data file not found: {data_file}")
 
-    processed_dir = _resolve_path(
-        args.processed_dir,
-        default=(
-            train_cfg.get("processed_dir")
-            or data_cfg.get("paths", {}).get("processed", {}).get("element_forecasting", "data/processed/element_forecasting")
-        ),
-    )
-    if processed_dir is None:
-        processed_dir = ROOT / "data/processed/element_forecasting"
-
     train_ratio = float(
         args.single_file_train_ratio
         if args.single_file_train_ratio is not None
-        else train_cfg.get("single_file_train_ratio", 0.8)
+        else train_cfg.get("train_ratio", train_cfg.get("single_file_train_ratio", 0.8))
     )
     val_ratio = float(
         args.single_file_val_ratio
         if args.single_file_val_ratio is not None
-        else train_cfg.get("single_file_val_ratio", 0.2)
+        else train_cfg.get("val_ratio", train_cfg.get("single_file_val_ratio", 0.2))
     )
 
     full_ds = ElementForecastWindowDataset(
-        processed_dir=processed_dir,
         data_file=data_file,
         var_names=var_names,
         input_steps=input_steps,
         output_steps=eval_steps,
         window_stride=int(train_cfg.get("window_stride", 1)),
-        stitch_across_files=bool(train_cfg.get("stitch_across_files", True)),
         open_file_lru_size=max(1, int(args.open_file_lru_size)),
         split=None,
-        manifest_path=None,
         norm_stats_path=norm_path,
         root=ROOT,
     )
@@ -512,6 +504,7 @@ def main() -> None:
     _log.info(f"🔢 Windows  : {split_stats['selected']} selected (Split: {args.split})")
     _log.info(f"⏱️  Steps    : {input_steps} (in) -> {eval_steps} (out total)")
     _log.info(f"🌀 Rollout  : Approx {rolling_iters} autoregressive loops per window")
+    _log.info(f"🧩 Blend    : enabled={enable_overlap_blend} overlap_steps={overlap_steps}")
     _log.info("=" * 60)
 
     eps = 1e-12
@@ -522,11 +515,15 @@ def main() -> None:
     mask_total = 0.0
     target_sum_total = 0.0
     target_sq_total = 0.0
+    ss_res_total_std = 0.0
+    target_sq_total_std = 0.0
 
     ss_res_h = torch.zeros(eval_steps, dtype=torch.float64, device=compute_device)
     abs_err_h = torch.zeros(eval_steps, dtype=torch.float64, device=compute_device)
     mask_h = torch.zeros(eval_steps, dtype=torch.float64, device=compute_device)
     target_sq_h = torch.zeros(eval_steps, dtype=torch.float64, device=compute_device)
+    ss_res_h_std = torch.zeros(eval_steps, dtype=torch.float64, device=compute_device)
+    target_sq_h_std = torch.zeros(eval_steps, dtype=torch.float64, device=compute_device)
 
     sample_pred: torch.Tensor | None = None
     sample_target: torch.Tensor | None = None
@@ -539,7 +536,13 @@ def main() -> None:
             y_std = batch["y"].float().to(compute_device, non_blocking=True)
             y_valid = batch["y_valid"].float().to(compute_device, non_blocking=True)
 
-            pred_std = _roll_forecast_std(predictor, x_std=x, target_steps=eval_steps)
+            pred_std = _roll_forecast_std(
+                predictor,
+                x_std=x,
+                target_steps=eval_steps,
+                overlap_steps=overlap_steps,
+                enable_overlap_blend=enable_overlap_blend,
+            )
             pred = _destandardize_batch(pred_std, var_names=var_names, norm=norm)
             target = _destandardize_batch(y_std, var_names=var_names, norm=norm)
             mask = y_valid
@@ -553,11 +556,15 @@ def main() -> None:
             mask_total += float(torch.sum(mask).item())
             target_sum_total += float(torch.sum(target * mask).item())
             target_sq_total += float(torch.sum(target.pow(2) * mask).item())
+            target_sq_total_std += float(torch.sum(y_std.pow(2) * mask).item())
+            ss_res_total_std += float(torch.sum((pred_std - y_std).pow(2) * mask).item())
 
             ss_res_h += torch.sum(diff2 * mask, dim=(0, 2, 3, 4)).to(dtype=torch.float64)
             abs_err_h += torch.sum(absdiff * mask, dim=(0, 2, 3, 4)).to(dtype=torch.float64)
             mask_h += torch.sum(mask, dim=(0, 2, 3, 4)).to(dtype=torch.float64)
             target_sq_h += torch.sum(target.pow(2) * mask, dim=(0, 2, 3, 4)).to(dtype=torch.float64)
+            target_sq_h_std += torch.sum(y_std.pow(2) * mask, dim=(0, 2, 3, 4)).to(dtype=torch.float64)
+            ss_res_h_std += torch.sum((pred_std - y_std).pow(2) * mask, dim=(0, 2, 3, 4)).to(dtype=torch.float64)
 
             total_samples += int(x.shape[0])
 
@@ -579,12 +586,12 @@ def main() -> None:
 
     ss_tot = target_sq_total - (target_sum_total * target_sum_total) / max(mask_total, eps)
     nse = 1.0 - (ss_res_total / max(ss_tot, eps))
-    rel_mse_pct = (ss_res_total / max(target_sq_total, eps)) * 100.0
+    rel_mse_pct = (ss_res_total_std / max(target_sq_total_std, eps)) * 100.0
 
     mse_h = (ss_res_h / torch.clamp_min(mask_h, eps)).cpu().numpy()
     rmse_h = np.sqrt(np.maximum(mse_h, 0.0))
     mae_h = (abs_err_h / torch.clamp_min(mask_h, eps)).cpu().numpy()
-    rel_mse_pct_h = ((ss_res_h / torch.clamp_min(target_sq_h, eps)) * 100.0).cpu().numpy()
+    rel_mse_pct_h = ((ss_res_h_std / torch.clamp_min(target_sq_h_std, eps)) * 100.0).cpu().numpy()
     horizon_hours_axis = (np.arange(eval_steps, dtype=np.float64) + 1.0) * float(args.time_step_hours)
 
     horizon_hours = float(eval_steps) * float(args.time_step_hours)
@@ -622,16 +629,20 @@ def main() -> None:
         )
         figure_files.append(str(fig3))
 
-        fig4 = figures_dir / "sample_last_horizon_map_var0.png"
-        _plot_sample_map(
-            fig4,
-            sample_pred=sample_pred,
-            sample_target=sample_target,
-            sample_mask=sample_mask,
-            var_name=(var_names[0] if len(var_names) > 0 else "var_0"),
-            time_step_hours=float(args.time_step_hours),
-        )
-        figure_files.append(str(fig4))
+        n_plot = max(1, min(int(args.max_plot_vars), len(var_names)))
+        for c in range(n_plot):
+            vname = var_names[c] if c < len(var_names) else f"var_{c}"
+            fig_map = figures_dir / f"sample_last_horizon_map_{vname}.png"
+            _plot_sample_map(
+                fig_map,
+                sample_pred=sample_pred,
+                sample_target=sample_target,
+                sample_mask=sample_mask,
+                var_name=vname,
+                time_step_hours=float(args.time_step_hours),
+                channel_idx=c,
+            )
+            figure_files.append(str(fig_map))
 
     report = {
         "task": "element_forecasting",
@@ -676,7 +687,7 @@ def main() -> None:
         },
         "notes": [
             "evaluation is single-file only and uses rolling autoregressive forecasting",
-            "relative_mse_percent = sum((pred-target)^2)/sum(target^2)*100 on valid mask",
+            "relative_mse_percent = sum((pred_std-y_std)^2)/sum(y_std^2)*100 on valid mask",
             "if time_step_hours is not 1, pass --time-step-hours explicitly",
         ],
     }

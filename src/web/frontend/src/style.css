@@ -1,0 +1,121 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Orbitron:wght@400;500;700;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "Orbitron", sans-serif;
+  
+  --color-tech-bg: #030712;
+  --color-tech-panel: rgba(17, 24, 39, 0.6);
+  --color-tech-border: rgba(6, 182, 212, 0.3);
+  --color-tech-cyan: #06b6d4;
+  --color-tech-cyan-glow: rgba(6, 182, 212, 0.5);
+  --color-tech-blue: #3b82f6;
+  --color-tech-accent: #8b5cf6;
+}
+
+@layer base {
+  body {
+    @apply bg-tech-bg text-slate-300 font-sans overflow-hidden selection:bg-tech-cyan selection:text-black;
+    background-image: 
+      radial-gradient(circle at 50% 0%, rgba(6, 182, 212, 0.15) 0%, transparent 50%),
+      radial-gradient(circle at 100% 100%, rgba(139, 92, 246, 0.1) 0%, transparent 50%),
+      linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 30px 30px, 30px 30px;
+    background-position: 0 0, 0 0, -1px -1px, -1px -1px;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-tech-panel backdrop-blur-md border border-tech-border rounded-xl shadow-[0_0_15px_rgba(0,0,0,0.5)] relative overflow-hidden;
+  }
+  
+  .glass-panel::before {
+    content: '';
+    @apply absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-tech-cyan to-transparent opacity-50;
+  }
+
+  .tech-input {
+    @apply w-full bg-slate-900/80 border border-slate-700 rounded-md px-3 py-2 text-sm font-mono text-tech-cyan focus:outline-none focus:border-tech-cyan focus:ring-1 focus:ring-tech-cyan transition-all;
+  }
+
+  .tech-btn {
+    @apply relative overflow-hidden font-mono text-sm uppercase tracking-wider font-semibold py-2 px-4 rounded-md transition-all duration-300 active:scale-95;
+  }
+
+  .primary-btn {
+    @apply bg-tech-cyan/10 text-tech-cyan border border-tech-cyan hover:bg-tech-cyan hover:text-black hover:shadow-[0_0_15px_var(--color-tech-cyan-glow)];
+  }
+
+  .ghost-btn {
+    @apply bg-transparent text-slate-400 border border-slate-700 hover:text-tech-cyan hover:border-tech-cyan shadow-none;
+  }
+
+  .tech-slider {
+    @apply w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer;
+  }
+  
+  .tech-slider::-webkit-slider-thumb {
+    @apply appearance-none w-5 h-5 bg-tech-cyan rounded-full shadow-[0_0_15px_var(--color-tech-cyan-glow)] cursor-pointer hover:scale-125 transition-transform border-2 border-slate-900;
+  }
+
+  .panel-title {
+    @apply font-display text-base tracking-widest text-white flex items-center gap-2 mb-4;
+  }
+  
+  .panel-title::before {
+    content: '';
+    @apply block w-1.5 h-4 bg-tech-cyan shadow-[0_0_8px_var(--color-tech-cyan-glow)];
+  }
+
+  .glow-cyan {
+    @apply shadow-[0_0_15px_rgba(6,182,212,0.4)];
+  }
+  
+  .glow-amber {
+    @apply shadow-[0_0_15px_rgba(245,158,11,0.4)];
+  }
+}
+
+/* Animations */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.radar-scan {
+  @apply relative w-32 h-32 rounded-full border border-tech-cyan/30 mx-auto mb-4 overflow-hidden;
+  background: radial-gradient(circle, rgba(6,182,212,0.1) 0%, transparent 70%);
+}
+
+.radar-scan::after {
+  content: '';
+  @apply absolute top-0 left-0 w-full h-full;
+  background: conic-gradient(from 0deg, transparent 70%, rgba(6,182,212,0.8) 100%);
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.pulse-dot {
+  @apply w-3 h-3 bg-tech-cyan rounded-full shadow-[0_0_10px_var(--color-tech-cyan-glow)];
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .5; transform: scale(0.8); }
+}
+
+/* Transitions */
+.fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+.slide-down-enter-active, .slide-down-leave-active { transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+.slide-down-enter-from, .slide-down-leave-to { opacity: 0; transform: translateY(-20px); }

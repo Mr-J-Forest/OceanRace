@@ -3,30 +3,29 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
 import yaml
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
 from element_forecasting.dataset import ElementForecastWindowDataset
-from element_forecasting.evaluator import compute_regression_metrics_masked, masked_mse
+from element_forecasting.evaluator import (
+	build_online_region_weights,
+	compute_regression_metrics_masked,
+	masked_edge_l1,
+	masked_gradient_l1,
+	masked_mse,
+	masked_spatial_mean_mse,
+	masked_weighted_mse,
+)
 from element_forecasting.model import HybridElementForecastModel
 from utils.logger import get_logger, setup_logging, tqdm, tqdm_logging
-import torch.nn.functional as F
 
 _log = get_logger(__name__)
-
-def masked_fft_loss(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-	"""计算时序上幅频特性的 L1 差异，迫使模型保留高频分布特征，防止曲线随时间步无限平滑。"""
-	# shape (B, T, C, H, W)，沿 T 维度 (dim=1) 做 FFT
-	p = pred * mask
-	t = target * mask
-	p_fft = torch.fft.rfft(p, dim=1)
-	t_fft = torch.fft.rfft(t, dim=1)
-	return F.l1_loss(torch.abs(p_fft), torch.abs(t_fft))
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -54,7 +53,6 @@ def resolve_core_config(
 	args_input_steps: int | None,
 	args_output_steps: int | None,
 	args_window_stride: int | None,
-	args_stitch_across_files: bool | None,
 	train_cfg: dict[str, Any],
 	model_cfg: dict[str, Any],
 ) -> dict[str, Any]:
@@ -62,16 +60,11 @@ def resolve_core_config(
 	input_steps = int(args_input_steps or train_cfg.get("input_steps") or model_cfg.get("input_steps", 12))
 	output_steps = int(args_output_steps or train_cfg.get("output_steps") or model_cfg.get("output_steps", 12))
 	window_stride = int(args_window_stride or train_cfg.get("window_stride", 1))
-	if args_stitch_across_files is None:
-		stitch_across_files = bool(train_cfg.get("stitch_across_files", True))
-	else:
-		stitch_across_files = bool(args_stitch_across_files)
 	return {
 		"var_names": var_names,
 		"input_steps": input_steps,
 		"output_steps": output_steps,
 		"window_stride": window_stride,
-		"stitch_across_files": stitch_across_files,
 	}
 
 
@@ -83,9 +76,202 @@ def _collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
 		"x": x,
 		"y": y,
 		"y_valid": y_valid,
-		"t0": torch.tensor([b["t0"] for b in batch], dtype=torch.long),
 		"paths": [b["path"] for b in batch],
 	}
+
+
+def _scheduled_sampling_epsilon(
+	*,
+	epoch: int,
+	total_epochs: int,
+	enabled: bool,
+	start_epoch: int,
+	epsilon_start: float,
+	epsilon_min: float,
+	decay_type: str,
+) -> float:
+	if not enabled:
+		return 1.0
+	if epoch < start_epoch:
+		return float(epsilon_start)
+	epsilon_start = float(max(0.0, min(1.0, epsilon_start)))
+	epsilon_min = float(max(0.0, min(1.0, epsilon_min)))
+	if epsilon_start <= epsilon_min:
+		return epsilon_min
+
+	span = max(1, total_epochs - start_epoch)
+	progress = min(1.0, max(0.0, (epoch - start_epoch + 1) / span))
+	if decay_type == "cosine":
+		factor = 0.5 * (1.0 + torch.cos(torch.tensor(progress * torch.pi)).item())
+		epsilon = epsilon_min + (epsilon_start - epsilon_min) * factor
+	else:
+		epsilon = epsilon_start - (epsilon_start - epsilon_min) * progress
+	return float(max(epsilon_min, min(epsilon_start, epsilon)))
+
+
+def _mix_rollout_input(
+	*,
+	pred_chunk: torch.Tensor,
+	target_chunk: torch.Tensor,
+	epsilon: float,
+	enabled: bool,
+) -> torch.Tensor:
+	if not enabled:
+		return target_chunk
+	if epsilon >= 1.0:
+		return target_chunk
+	if epsilon <= 0.0:
+		return pred_chunk
+	bsz = pred_chunk.shape[0]
+	gate = (torch.rand(bsz, 1, 1, 1, 1, device=pred_chunk.device) < float(epsilon)).float()
+	return gate * target_chunk + (1.0 - gate) * pred_chunk
+
+
+def _rollout_predict_with_overlap(
+	*,
+	model: nn.Module,
+	x: torch.Tensor,
+	input_steps: int,
+	target_steps: int,
+	chunk_steps: int,
+	overlap_steps: int,
+	enable_overlap_blend: bool,
+) -> torch.Tensor:
+	"""按推理器同款逻辑执行滚动预测，并在重叠区做线性融合。"""
+	if target_steps <= 0:
+		raise ValueError("target_steps must be > 0")
+	if chunk_steps <= 0:
+		raise ValueError("chunk_steps must be > 0")
+
+	overlap = int(max(0, overlap_steps if enable_overlap_blend else 0))
+	if overlap >= chunk_steps:
+		overlap = max(0, chunk_steps - 1)
+	stride = max(1, chunk_steps - overlap)
+
+	cur_x = x
+	out_seq: torch.Tensor | None = None
+	cursor_start = 0
+
+	while out_seq is None or out_seq.shape[1] < target_steps:
+		pred_chunk = model(cur_x)["pred"].float()
+
+		if out_seq is None:
+			out_seq = pred_chunk
+		else:
+			overlap_len = max(0, out_seq.shape[1] - cursor_start)
+			overlap_len = min(overlap_len, pred_chunk.shape[1])
+			if overlap_len > 0:
+				if enable_overlap_blend:
+					alpha = torch.linspace(0.0, 1.0, steps=overlap_len, device=pred_chunk.device)
+					alpha = alpha.view(1, overlap_len, 1, 1, 1)
+					old = out_seq[:, cursor_start:cursor_start + overlap_len]
+					new = pred_chunk[:, :overlap_len]
+					out_seq[:, cursor_start:cursor_start + overlap_len] = old * (1.0 - alpha) + new * alpha
+				else:
+					out_seq[:, cursor_start:cursor_start + overlap_len] = pred_chunk[:, :overlap_len]
+
+			tail = pred_chunk[:, overlap_len:]
+			if tail.shape[1] > 0:
+				out_seq = torch.cat([out_seq, tail], dim=1)
+
+		feed_steps = min(stride, pred_chunk.shape[1])
+		feed = pred_chunk[:, :feed_steps]
+		cur_x = torch.cat([cur_x.float(), feed], dim=1)[:, -input_steps:].contiguous()
+		cursor_start += stride
+
+	assert out_seq is not None
+	return out_seq[:, :target_steps]
+
+
+def _rollout_composite_train_style_loss(
+	*,
+	model: nn.Module,
+	x: torch.Tensor,
+	y: torch.Tensor,
+	y_valid: torch.Tensor,
+	chunk_steps: int,
+	rollout_gamma: float,
+	channel_weights: torch.Tensor,
+	region_weighting_enabled: bool,
+	region_weight_base: float,
+	region_weight_strength: float,
+	region_weight_quantile: float,
+	loss_main_weight: float,
+	loss_aux_transformer_weight: float,
+	loss_spatial_mean_weight: float,
+	loss_aux_spatial_mean_weight: float,
+	loss_gradient_consistency_weight: float,
+	loss_edge_weight: float,
+	edge_loss_type: str,
+	input_steps: int,
+) -> torch.Tensor:
+	"""验证阶段使用与训练一致的 rollout 组合损失。"""
+	cur_x = x
+	total_steps = int(y.shape[1])
+	rollout_loss = x.new_zeros((), dtype=torch.float32)
+	weight_sum = 0.0
+	rollout_count = max(1, (total_steps + max(1, chunk_steps) - 1) // max(1, chunk_steps))
+
+	for rollout_idx in range(rollout_count):
+		t0 = rollout_idx * chunk_steps
+		if t0 >= total_steps:
+			break
+		t1 = min(t0 + chunk_steps, total_steps)
+		y_chunk = y[:, t0:t1]
+		y_valid_chunk = y_valid[:, t0:t1]
+
+		spatial_weights = None
+		if region_weighting_enabled:
+			spatial_weights = build_online_region_weights(
+				target=y_chunk,
+				mask=y_valid_chunk,
+				base_weight=region_weight_base,
+				strength=region_weight_strength,
+				quantile=region_weight_quantile,
+			)
+
+		out = model(cur_x)
+		pred = out["pred"][:, : y_chunk.shape[1]]
+		pred_transformer = out["pred_transformer"][:, : y_chunk.shape[1]]
+
+		loss_main = masked_weighted_mse(
+			pred,
+			y_chunk,
+			y_valid_chunk,
+			channel_weights=channel_weights,
+			spatial_weights=spatial_weights,
+		)
+		loss_aux = masked_weighted_mse(
+			pred_transformer,
+			y_chunk,
+			y_valid_chunk,
+			channel_weights=channel_weights,
+			spatial_weights=spatial_weights,
+		)
+		loss_main_mean = masked_spatial_mean_mse(pred, y_chunk, y_valid_chunk, channel_weights=channel_weights)
+		loss_aux_mean = masked_spatial_mean_mse(pred_transformer, y_chunk, y_valid_chunk, channel_weights=channel_weights)
+		loss_grad = masked_gradient_l1(pred, y_chunk, y_valid_chunk)
+		loss_edge = pred.new_zeros((), dtype=pred.dtype)
+		if loss_edge_weight > 0.0:
+			loss_edge = masked_edge_l1(pred, y_chunk, y_valid_chunk, edge_type=edge_loss_type)
+
+		step_loss = (
+			loss_main_weight * loss_main
+			+ loss_aux_transformer_weight * loss_aux
+			+ loss_spatial_mean_weight * loss_main_mean
+			+ loss_aux_spatial_mean_weight * loss_aux_mean
+			+ loss_gradient_consistency_weight * loss_grad
+			+ loss_edge_weight * loss_edge
+		)
+		w = rollout_gamma ** rollout_idx
+		rollout_loss = rollout_loss + (w * step_loss)
+		weight_sum += w
+
+		if t1 < total_steps:
+			feed = pred[:, : min(chunk_steps, pred.shape[1])]
+			cur_x = torch.cat([cur_x.float(), feed], dim=1)[:, -input_steps:].contiguous()
+
+	return rollout_loss / max(weight_sum, 1e-12)
 
 
 def run_training(args: argparse.Namespace) -> None:
@@ -93,55 +279,45 @@ def run_training(args: argparse.Namespace) -> None:
 	data_cfg = _load_yaml(args.data_config)
 	model_cfg = _load_yaml(args.model_config)
 	train_cfg = _load_yaml(args.train_config)
+	# Suppress a known PyTorch transformer warning that is harmless for this model and clutters console output.
+	warnings.filterwarnings(
+		"ignore",
+		message="enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True",
+		category=UserWarning,
+	)
 
 	core = resolve_core_config(
 		args_var_names=args.var_names,
 		args_input_steps=args.input_steps,
 		args_output_steps=args.output_steps,
 		args_window_stride=args.window_stride,
-		args_stitch_across_files=args.stitch_across_files,
 		train_cfg=train_cfg,
 		model_cfg=model_cfg,
 	)
 	var_names = core["var_names"]
 	input_steps = core["input_steps"]
-	output_steps = core["output_steps"]
+	model_output_steps = core["output_steps"]
+	rollout_steps = max(1, int(train_cfg.get("rollout_steps", 1)))
+	train_target_steps = int(model_output_steps * rollout_steps)
+	val_target_steps = int(train_cfg.get("val_target_steps", train_target_steps))
+	val_target_steps = max(model_output_steps, val_target_steps)
 	window_stride = core["window_stride"]
-	stitch_across_files = core["stitch_across_files"]
-	open_file_lru_size = int(
-		args.open_file_lru_size
-		if args.open_file_lru_size is not None
-		else train_cfg.get("open_file_lru_size", 16)
-	)
-	single_file_train_ratio = float(
-		train_cfg.get("single_file_train_ratio", data_cfg.get("split", {}).get("train_ratio", 0.7))
-	)
-	single_file_val_ratio = float(
-		train_cfg.get("single_file_val_ratio", data_cfg.get("split", {}).get("val_ratio", 0.15))
-	)
+	split_mode = str(train_cfg.get("split_mode", "competition_years")).strip().lower()
+	split_years = train_cfg.get("split_years", None)
+	open_file_lru_size = int(train_cfg.get("open_file_lru_size", train_cfg.get("dataset_cache_max_files", 16)))
+	open_file_lru_size = max(1, open_file_lru_size)
+	split_cfg = data_cfg.get("split", {})
+	train_ratio = float(train_cfg.get("train_ratio", split_cfg.get("train_ratio", 0.7)))
+	val_ratio = float(train_cfg.get("val_ratio", split_cfg.get("val_ratio", 0.15)))
+	test_ratio = float(train_cfg.get("test_ratio", split_cfg.get("test_ratio", 0.15)))
 
-	processed_dir = Path(
-		args.processed_dir
-		or train_cfg.get("processed_dir")
-		or data_cfg.get("paths", {}).get("processed", {}).get("element_forecasting", "data/processed/element_forecasting")
+	data_file = Path(
+		args.data_file
+		or train_cfg.get("data_file")
+		or data_cfg.get("paths", {}).get("processed", {}).get("element_forecasting", "data/processed/element_forecasting/path.txt")
 	)
-	if not processed_dir.is_absolute():
-		processed_dir = root / processed_dir
-
-	data_file: Path | None = None
-	data_file_str = args.data_file or train_cfg.get("data_file")
-	if data_file_str:
-		data_file = Path(data_file_str)
-		if not data_file.is_absolute():
-			data_file = root / data_file
-
-	manifest_path = Path(
-		args.manifest
-		or train_cfg.get("manifest_path")
-		or data_cfg.get("artifacts", {}).get("split_manifests", {}).get("element_forecasting", "data/processed/splits/element_forecasting.json")
-	)
-	if not manifest_path.is_absolute():
-		manifest_path = root / manifest_path
+	if not data_file.is_absolute():
+		data_file = root / data_file
 
 	norm_path_str = (
 		args.norm
@@ -165,65 +341,36 @@ def run_training(args: argparse.Namespace) -> None:
 	log_file = root / "outputs/logs/element_forecasting_train.log"
 	setup_logging(log_file=log_file)
 
-	if data_file is not None:
-		full_ds = ElementForecastWindowDataset(
-			data_file=data_file,
-			var_names=var_names,
-			input_steps=input_steps,
-			output_steps=output_steps,
-			window_stride=window_stride,
-			stitch_across_files=stitch_across_files,
-			open_file_lru_size=open_file_lru_size,
-			split=None,
-			norm_stats_path=norm_path,
-			root=root,
-		)
-		n_total = len(full_ds)
-		if n_total < 2:
-			raise SystemExit("single data file has too few windows (<2); adjust input/output steps or provide longer series")
-
-		n_train = int(n_total * single_file_train_ratio)
-		n_val = int(n_total * single_file_val_ratio)
-		n_train = min(max(1, n_train), n_total - 1)
-		n_val = max(1, n_val)
-		if n_train + n_val > n_total:
-			n_val = n_total - n_train
-		if n_val <= 0:
-			raise SystemExit("single-file split produced empty val set; lower single_file_train_ratio or increase sequence length")
-
-		train_indices = list(range(0, n_train))
-		val_indices = list(range(n_total - n_val, n_total))
-		train_ds = Subset(full_ds, train_indices)
-		val_ds = Subset(full_ds, val_indices)
-	else:
-		train_ds = ElementForecastWindowDataset(
-			processed_dir=processed_dir,
-			var_names=var_names,
-			input_steps=input_steps,
-			output_steps=output_steps,
-			window_stride=window_stride,
-			stitch_across_files=stitch_across_files,
-			open_file_lru_size=open_file_lru_size,
-			split="train",
-			manifest_path=manifest_path,
-			norm_stats_path=norm_path,
-			root=root,
-		)
-		val_ds = ElementForecastWindowDataset(
-			processed_dir=processed_dir,
-			var_names=var_names,
-			input_steps=input_steps,
-			output_steps=output_steps,
-			window_stride=window_stride,
-			stitch_across_files=stitch_across_files,
-			open_file_lru_size=open_file_lru_size,
-			split="val",
-			manifest_path=manifest_path,
-			norm_stats_path=norm_path,
-			root=root,
-		)
+	train_ds = ElementForecastWindowDataset(
+		data_file=data_file,
+		var_names=var_names,
+		input_steps=input_steps,
+		output_steps=train_target_steps,
+		window_stride=window_stride,
+		open_file_lru_size=open_file_lru_size,
+		split="train",
+		split_mode=split_mode,
+		split_years=split_years,
+		split_ratios=(train_ratio, val_ratio, test_ratio),
+		norm_stats_path=norm_path,
+		root=root,
+	)
+	val_ds = ElementForecastWindowDataset(
+		data_file=data_file,
+		var_names=var_names,
+		input_steps=input_steps,
+		output_steps=val_target_steps,
+		window_stride=window_stride,
+		open_file_lru_size=open_file_lru_size,
+		split="val",
+		split_mode=split_mode,
+		split_years=split_years,
+		split_ratios=(train_ratio, val_ratio, test_ratio),
+		norm_stats_path=norm_path,
+		root=root,
+	)
 	if len(train_ds) == 0:
-		raise SystemExit("train dataset is empty; check split manifest or time window settings")
+		raise SystemExit("train dataset is empty; check data file and split/time-window settings")
 
 	batch_size = int(args.batch_size if args.batch_size is not None else train_cfg.get("batch_size", 2))
 	num_workers = int(args.num_workers if args.num_workers is not None else train_cfg.get("num_workers", 0))
@@ -235,6 +382,20 @@ def run_training(args: argparse.Namespace) -> None:
 		torch.backends.cudnn.allow_tf32 = True
 		torch.backends.cudnn.benchmark = True
 		torch.set_float32_matmul_precision("high")
+	rollout_gamma = float(train_cfg.get("rollout_gamma", 1.0))
+	rollout_gamma = max(0.0, min(1.0, rollout_gamma))
+	val_overlap_blend_enabled = bool(train_cfg.get("overlap_blend_enabled", True))
+	val_overlap_steps = int(train_cfg.get("overlap_steps", 4))
+	rollout_detach_between_steps = bool(train_cfg.get("rollout_detach_between_steps", False))
+	ss_enabled = bool(train_cfg.get("scheduled_sampling_enabled", False))
+	ss_start_epoch = max(1, int(train_cfg.get("scheduled_sampling_start_epoch", 1)))
+	ss_epsilon_start = float(train_cfg.get("scheduled_sampling_epsilon_start", 1.0))
+	ss_epsilon_min = float(train_cfg.get("scheduled_sampling_epsilon_min", 0.3))
+	ss_decay_type = str(train_cfg.get("scheduled_sampling_decay_type", "linear")).strip().lower()
+	progress_bar_enabled = bool(train_cfg.get("progress_bar_enabled", True))
+	progress_bar_mininterval = float(train_cfg.get("progress_bar_mininterval", 1.5))
+	progress_bar_mininterval = max(0.2, progress_bar_mininterval)
+	progress_bar_leave = bool(train_cfg.get("progress_bar_leave", False))
 	pin_memory = str(device).startswith("cuda")
 	persistent_workers = num_workers > 0
 	loader_kwargs = {
@@ -265,20 +426,48 @@ def run_training(args: argparse.Namespace) -> None:
 	model = HybridElementForecastModel(
 		in_channels=in_channels,
 		input_steps=input_steps,
-		output_steps=output_steps,
+		output_steps=model_output_steps,
 		d_model=int(model_cfg.get("d_model", 128)),
 		nhead=int(model_cfg.get("nhead", 4)),
 		num_layers=int(model_cfg.get("num_layers", 6)),
 		block_size=int(model_cfg.get("block_size", 4)),
 		dropout=float(model_cfg.get("dropout", 0.1)),
 		spatial_downsample=int(model_cfg.get("spatial_downsample", 4)),
+		multi_scale_enabled=bool(model_cfg.get("multi_scale_enabled", False)),
+		aux_spatial_downsample=int(model_cfg.get("aux_spatial_downsample", 8)),
+		multi_scale_fusion=str(model_cfg.get("multi_scale_fusion", "residual_add")),
+		multi_scale_aux_weight=float(model_cfg.get("multi_scale_aux_weight", 0.35)),
+		periodic_periods=model_cfg.get("periodic_periods", [24.0]),
+		periodic_harmonics=int(model_cfg.get("periodic_harmonics", 1)),
+		refine_head_enabled=bool(model_cfg.get("refine_head_enabled", False)),
+		refine_head_hidden_ratio=float(model_cfg.get("refine_head_hidden_ratio", 1.0)),
+		refine_head_num_layers=int(model_cfg.get("refine_head_num_layers", 2)),
+		refine_head_residual=bool(model_cfg.get("refine_head_residual", True)),
 	).to(device)
 
 	lr = float(args.lr or train_cfg.get("lr", 1e-4))
 	epochs = int(args.epochs or train_cfg.get("epochs", 10))
 	loss_main_weight = float(train_cfg.get("loss_main_weight", 1.0))
-	loss_aux_transformer_weight = float(train_cfg.get("loss_aux_transformer_weight", 0.0))
-	loss_fft_weight = float(train_cfg.get("loss_fft_weight", 0.1))
+	loss_aux_transformer_weight = float(train_cfg.get("loss_aux_transformer_weight", 0.2))
+	loss_spatial_mean_weight = float(train_cfg.get("loss_spatial_mean_weight", 0.2))
+	loss_aux_spatial_mean_weight = float(train_cfg.get("loss_aux_spatial_mean_weight", 0.05))
+	loss_gradient_consistency_weight = float(train_cfg.get("loss_gradient_consistency_weight", 0.0))
+	loss_edge_weight = float(train_cfg.get("loss_edge_weight", 0.0))
+	edge_loss_type = str(train_cfg.get("edge_loss_type", "sobel"))
+	region_weighting_enabled = bool(train_cfg.get("region_weighting_enabled", False))
+	region_weight_base = float(train_cfg.get("region_weight_base", 1.0))
+	region_weight_strength = float(train_cfg.get("region_weight_strength", 1.0))
+	region_weight_quantile = float(train_cfg.get("region_weight_quantile", 0.8))
+	eval_extended_spatial_metrics = bool(train_cfg.get("eval_extended_spatial_metrics", True))
+	eval_edge_quantile = float(train_cfg.get("eval_edge_quantile", region_weight_quantile))
+	var_loss_weights_cfg = train_cfg.get("var_loss_weights", {})
+	if not isinstance(var_loss_weights_cfg, dict):
+		var_loss_weights_cfg = {}
+	channel_weights = torch.tensor(
+		[float(var_loss_weights_cfg.get(v, 1.0)) for v in var_names],
+		dtype=torch.float32,
+		device=device,
+	).view(1, 1, -1, 1, 1)
 	grad_accum_steps = max(1, int(train_cfg.get("grad_accum_steps", 1)))
 	amp_enabled = bool(train_cfg.get("amp", True)) and str(device).startswith("cuda")
 	amp_device_type = "cuda" if str(device).startswith("cuda") else "cpu"
@@ -286,40 +475,171 @@ def run_training(args: argparse.Namespace) -> None:
 	scaler = torch.amp.GradScaler(amp_device_type, enabled=amp_enabled)
 
 	best_val = float("inf")
+	best_val_nrmse_percent = float("inf")
 	best_path = ckpt_dir / "hybrid_best.pt"
 	history: list[dict[str, float]] = []
 
-	_log.info("=" * 60)
-	_log.info("🚀 START TRAINING: Element Forecasting")
-	_log.info("=" * 60)
-	_log.info(f"⚙️  Model    : {in_channels} channels, vars={list(var_names)}")
-	_log.info(f"⏱️  Steps    : {input_steps} (in) -> {output_steps} (out)")
-	_log.info(f"📦 Data     : {len(train_ds)} train windows | {len(val_ds)} val windows")
-	_log.info(f"🚀 Training : amp={amp_enabled}, grad_accum={grad_accum_steps}, bs={train_loader.batch_size}")
-	_log.info("=" * 60)
+	_log.info(
+		"start training\n"
+		"  vars=%s\n"
+		"  split_mode=%s\n"
+		"  in/out=%d/%d\n"
+		"  rollout=%d (gamma=%.2f)\n"
+		"  val_target_steps=%d\n"
+		"  overlap_blend=%s/%d\n"
+		"  scheduled_sampling=%s (eps %.2f->%.2f)\n"
+		"  amp=%s",
+		list(var_names),
+		split_mode,
+		input_steps,
+		model_output_steps,
+		rollout_steps,
+		rollout_gamma,
+		val_target_steps,
+		val_overlap_blend_enabled,
+		val_overlap_steps,
+		ss_enabled,
+		ss_epsilon_start,
+		ss_epsilon_min,
+		amp_enabled,
+	)
+	_log.info(
+		"data setup\n"
+		"  data=%s\n"
+		"  split_ratio=(%.2f,%.2f,%.2f)\n"
+		"  split_years=%s\n"
+		"  windows train/val=%d/%d\n"
+		"  batch=%d\n"
+		"  grad_accum_steps=%d\n"
+		"  workers=%d",
+		str(data_file),
+		train_ratio,
+		val_ratio,
+		test_ratio,
+		str(split_years),
+		len(train_ds),
+		len(val_ds),
+		batch_size,
+		grad_accum_steps,
+		num_workers,
+	)
+	_log.debug(
+		"details | open_file_lru_size=%d | var_loss_weights=%s | loss_spatial_mean_weight=%.3f | loss_aux_spatial_mean_weight=%.3f | loss_gradient_consistency_weight=%.3f | loss_edge_weight=%.3f(%s) | region_weighting_enabled=%s(base=%.2f strength=%.2f q=%.2f) | rollout_detach_between_steps=%s | ss_start_epoch=%d | progress_bar_enabled=%s mininterval=%.2f leave=%s",
+		open_file_lru_size,
+		{v: float(var_loss_weights_cfg.get(v, 1.0)) for v in var_names},
+		loss_spatial_mean_weight,
+		loss_aux_spatial_mean_weight,
+		loss_gradient_consistency_weight,
+		loss_edge_weight,
+		edge_loss_type,
+		region_weighting_enabled,
+		region_weight_base,
+		region_weight_strength,
+		region_weight_quantile,
+		rollout_detach_between_steps,
+		ss_start_epoch,
+		progress_bar_enabled,
+		progress_bar_mininterval,
+		progress_bar_leave,
+	)
 
 	for epoch in range(1, epochs + 1):
 		model.train()
 		train_loss_sum = 0.0
 		train_count = 0
+		epsilon = _scheduled_sampling_epsilon(
+			epoch=epoch,
+			total_epochs=epochs,
+			enabled=ss_enabled,
+			start_epoch=ss_start_epoch,
+			epsilon_start=ss_epsilon_start,
+			epsilon_min=ss_epsilon_min,
+			decay_type=ss_decay_type,
+		)
 		optimizer.zero_grad(set_to_none=True)
+		pbar_disable = (not progress_bar_enabled)
+		desc = f"epoch {epoch}/{epochs}"
 		with tqdm_logging():
-			train_pbar = tqdm(train_loader, desc=f"Epoch {epoch:02d}/{epochs:02d} [Train]", ncols=100, leave=False)
-			for step, batch in enumerate(train_pbar, start=1):
+			for step, batch in enumerate(
+				tqdm(
+					train_loader,
+					desc=desc,
+					disable=pbar_disable,
+					leave=progress_bar_leave,
+					mininterval=progress_bar_mininterval,
+					dynamic_ncols=True,
+				),
+				start=1,
+			):
 				x = batch["x"].to(device).nan_to_num(0.0)
 				y = batch["y"].to(device).nan_to_num(0.0)
 				y_valid = batch["y_valid"].to(device)
-				t0 = batch["t0"].to(device)
 				try:
 					with torch.amp.autocast(amp_device_type, enabled=amp_enabled):
-						out = model(x, t0=t0)
-						pred = out["pred"]
-						loss_main = masked_mse(pred, y, y_valid)
-						loss_fft = masked_fft_loss(pred, y, y_valid)
-						loss = loss_main_weight * loss_main + loss_fft_weight * loss_fft
-						if loss_aux_transformer_weight != 0.0:
-							loss_aux = masked_mse(out["pred_transformer"], y, y_valid)
-							loss = loss + loss_aux_transformer_weight * loss_aux
+						cur_x = x
+						rollout_loss = x.new_zeros((), dtype=torch.float32)
+						weight_sum = 0.0
+						for rollout_idx in range(rollout_steps):
+							t0 = rollout_idx * model_output_steps
+							t1 = t0 + model_output_steps
+							y_chunk = y[:, t0:t1]
+							y_valid_chunk = y_valid[:, t0:t1]
+							spatial_weights = None
+							if region_weighting_enabled:
+								spatial_weights = build_online_region_weights(
+									target=y_chunk,
+									mask=y_valid_chunk,
+									base_weight=region_weight_base,
+									strength=region_weight_strength,
+									quantile=region_weight_quantile,
+								)
+
+							out = model(cur_x)
+							pred = out["pred"]
+							pred_transformer = out["pred_transformer"]
+							loss_main = masked_weighted_mse(
+								pred,
+								y_chunk,
+								y_valid_chunk,
+								channel_weights=channel_weights,
+								spatial_weights=spatial_weights,
+							)
+							loss_aux = masked_weighted_mse(
+								pred_transformer,
+								y_chunk,
+								y_valid_chunk,
+								channel_weights=channel_weights,
+								spatial_weights=spatial_weights,
+							)
+							loss_main_mean = masked_spatial_mean_mse(pred, y_chunk, y_valid_chunk, channel_weights=channel_weights)
+							loss_aux_mean = masked_spatial_mean_mse(pred_transformer, y_chunk, y_valid_chunk, channel_weights=channel_weights)
+							loss_grad = masked_gradient_l1(pred, y_chunk, y_valid_chunk)
+							loss_edge = pred.new_zeros((), dtype=pred.dtype)
+							if loss_edge_weight > 0.0:
+								loss_edge = masked_edge_l1(pred, y_chunk, y_valid_chunk, edge_type=edge_loss_type)
+							step_loss = (
+								loss_main_weight * loss_main
+								+ loss_aux_transformer_weight * loss_aux
+								+ loss_spatial_mean_weight * loss_main_mean
+								+ loss_aux_spatial_mean_weight * loss_aux_mean
+								+ loss_gradient_consistency_weight * loss_grad
+								+ loss_edge_weight * loss_edge
+							)
+							w = rollout_gamma ** rollout_idx
+							rollout_loss = rollout_loss + (w * step_loss)
+							weight_sum += w
+
+							if rollout_idx < rollout_steps - 1:
+								next_pred = pred.detach() if rollout_detach_between_steps else pred
+								mixed = _mix_rollout_input(
+									pred_chunk=next_pred,
+									target_chunk=y_chunk,
+									epsilon=epsilon,
+									enabled=ss_enabled and epoch >= ss_start_epoch,
+								)
+								cur_x = torch.cat([cur_x, mixed], dim=1)[:, -input_steps:].contiguous()
+
+						loss = rollout_loss / max(weight_sum, 1e-12)
 				except torch.OutOfMemoryError as ex:
 					if str(device).startswith("cuda"):
 						torch.cuda.empty_cache()
@@ -344,7 +664,6 @@ def run_training(args: argparse.Namespace) -> None:
 
 				train_loss_sum += float(loss.item()) * x.size(0)
 				train_count += x.size(0)
-				train_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
 		if train_count > 0 and (len(train_loader) % grad_accum_steps != 0):
 			scaler.unscale_(optimizer)
@@ -358,28 +677,59 @@ def run_training(args: argparse.Namespace) -> None:
 		model.eval()
 		val_loss_sum = 0.0
 		val_count = 0
-		val_metrics_sum = {"mse": 0.0, "mae": 0.0, "nse": 0.0}
+		val_metrics_sum: dict[str, float] = {}
 
 		with torch.no_grad():
-			with tqdm_logging():
-				val_pbar = tqdm(val_loader, desc=f"Epoch {epoch:02d}/{epochs:02d} [Val  ]", ncols=100, leave=False)
-				for batch in val_pbar:
-					x = batch["x"].to(device)
-					y = batch["y"].to(device)
-					y_valid = batch["y_valid"].to(device)
-					t0 = batch["t0"].to(device)
-					pred = model(x, t0=t0)["pred"]
-					loss = masked_mse(pred, y, y_valid)
-					bs = x.size(0)
-					val_loss_sum += float(loss.item()) * bs
-					val_count += bs
+			for batch in val_loader:
+				x = batch["x"].to(device)
+				y = batch["y"].to(device)
+				y_valid = batch["y_valid"].to(device)
+				loss = _rollout_composite_train_style_loss(
+					model=model,
+					x=x,
+					y=y,
+					y_valid=y_valid,
+					chunk_steps=model_output_steps,
+					rollout_gamma=rollout_gamma,
+					channel_weights=channel_weights,
+					region_weighting_enabled=region_weighting_enabled,
+					region_weight_base=region_weight_base,
+					region_weight_strength=region_weight_strength,
+					region_weight_quantile=region_weight_quantile,
+					loss_main_weight=loss_main_weight,
+					loss_aux_transformer_weight=loss_aux_transformer_weight,
+					loss_spatial_mean_weight=loss_spatial_mean_weight,
+					loss_aux_spatial_mean_weight=loss_aux_spatial_mean_weight,
+					loss_gradient_consistency_weight=loss_gradient_consistency_weight,
+					loss_edge_weight=loss_edge_weight,
+					edge_loss_type=edge_loss_type,
+					input_steps=input_steps,
+				)
+				pred = _rollout_predict_with_overlap(
+					model=model,
+					x=x,
+					input_steps=input_steps,
+					target_steps=int(y.shape[1]),
+					chunk_steps=model_output_steps,
+					overlap_steps=val_overlap_steps,
+					enable_overlap_blend=val_overlap_blend_enabled,
+				)
+				bs = x.size(0)
+				val_loss_sum += float(loss.item()) * bs
+				val_count += bs
 
-					# 逐批次计算并累加，防止全部 concat 导致 OOM
-					batch_metrics = compute_regression_metrics_masked(pred, y, y_valid)
-					for k in val_metrics_sum:
-						val_metrics_sum[k] += batch_metrics[k] * bs
-					
-					val_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+				# 逐批次计算并累加，防止全部 concat 导致 OOM
+				batch_metrics = compute_regression_metrics_masked(pred, y, y_valid, edge_quantile=eval_edge_quantile)
+				if not eval_extended_spatial_metrics:
+					batch_metrics = {
+						"mse": batch_metrics["mse"],
+						"rmse": batch_metrics["rmse"],
+						"nrmse_percent": batch_metrics["nrmse_percent"],
+						"mae": batch_metrics["mae"],
+						"nse": batch_metrics["nse"],
+					}
+				for k, v in batch_metrics.items():
+					val_metrics_sum[k] = val_metrics_sum.get(k, 0.0) + (v * bs)
 
 		val_loss = val_loss_sum / max(val_count, 1)
 		metrics = {k: v / max(val_count, 1) for k, v in val_metrics_sum.items()}
@@ -391,47 +741,70 @@ def run_training(args: argparse.Namespace) -> None:
 			"val_loss": float(val_loss),
 			"val_mse": float(metrics["mse"]),
 			"val_rmse": float(metrics["rmse"]),
+			"val_nrmse_percent": float(metrics["nrmse_percent"]),
 			"val_mae": float(metrics["mae"]),
 			"val_nse": float(metrics["nse"]),
 		}
+		if "grad_rmse" in metrics:
+			epoch_record["val_grad_rmse"] = float(metrics["grad_rmse"])
+		if "extreme_error" in metrics:
+			epoch_record["val_extreme_error"] = float(metrics["extreme_error"])
+		if "edge_rmse" in metrics:
+			epoch_record["val_edge_rmse"] = float(metrics["edge_rmse"])
 		history.append(epoch_record)
-		
-		# 精简的单行输出，取消各种花哨标签，只留核心数据
-		_log.info(
-			f"Epoch {epoch:02d}/{epochs:02d} | "
-			f"Train Loss: {train_loss:.4f} | "
-			f"Val Loss: {val_loss:.4f} | "
-			f"RMSE: {metrics['rmse']:.4f} | "
-			f"MAE: {metrics['mae']:.4f}"
+		log_msg = (
+			"epoch=%d train_loss=%.6f val_loss=%.6f val_rmse=%.6f val_mae=%.6f "
+			"val_nse=%.6f val_nrmse=%.4f%% ss_epsilon=%.4f"
 		)
+		log_args: list[float | int] = [
+			epoch,
+			train_loss,
+			val_loss,
+			metrics["rmse"],
+			metrics["mae"],
+			metrics["nse"],
+			metrics["nrmse_percent"],
+			epsilon,
+		]
+		if "grad_rmse" in metrics:
+			log_msg += " val_grad_rmse=%.6f"
+			log_args.append(metrics["grad_rmse"])
+		if "edge_rmse" in metrics:
+			log_msg += " val_edge_rmse=%.6f"
+			log_args.append(metrics["edge_rmse"])
+		if "extreme_error" in metrics:
+			log_msg += " val_extreme_error=%.6f"
+			log_args.append(metrics["extreme_error"])
+		_log.info(log_msg, *log_args)
 
 		if val_loss < best_val:
 			best_val = val_loss
+
+		if metrics["nrmse_percent"] < best_val_nrmse_percent:
+			best_val_nrmse_percent = float(metrics["nrmse_percent"])
 			torch.save(
 				{
 					"model_state": model.state_dict(),
 					"var_names": list(var_names),
 					"input_steps": input_steps,
-					"output_steps": output_steps,
+					"output_steps": model_output_steps,
 					"in_channels": in_channels,
 					"model_config": model_cfg,
 				},
 				best_path,
 			)
-			_log.info("new best checkpoint saved: %s", best_path)
+			_log.info("new best checkpoint saved by nrmse_percent=%.4f%%: %s", best_val_nrmse_percent, best_path)
 
 	(metrics_dir / "train_history.json").write_text(
 		json.dumps(history, ensure_ascii=False, indent=2),
 		encoding="utf-8",
 	)
-	
-	_log.info("=" * 60)
-	_log.info("🎉 TRAINING COMPLETED 🎉")
-	_log.info("=" * 60)
-	_log.info(f"🏆 Best Validation Loss : {best_val:.6f}")
-	_log.info(f"💾 Checkpoint Saved To  : {best_path}")
-	_log.info(f"📊 Training History     : {metrics_dir / 'train_history.json'}")
-	_log.info("=" * 60)
+	_log.info(
+		"training done | best_val_loss=%.6f | best_val_nrmse_percent=%.4f%% | checkpoint=%s",
+		best_val,
+		best_val_nrmse_percent,
+		best_path,
+	)
 
 
 def main() -> None:
@@ -440,21 +813,12 @@ def main() -> None:
 	ap.add_argument("--data-config", type=Path, default=root / "configs/data_config.yaml")
 	ap.add_argument("--model-config", type=Path, default=root / "configs/element_forecasting/model.yaml")
 	ap.add_argument("--train-config", type=Path, default=root / "configs/element_forecasting/train.yaml")
-	ap.add_argument("--processed-dir", type=str, default=None)
-	ap.add_argument("--data-file", type=str, default=None, help="单一 NetCDF 文件路径；设置后将忽略 manifest/split")
-	ap.add_argument("--manifest", type=str, default=None)
+	ap.add_argument("--data-file", type=str, default=None)
 	ap.add_argument("--norm", type=str, default=None)
 	ap.add_argument("--var-names", type=str, default=None, help="逗号分隔变量名，输入变量=输出变量")
 	ap.add_argument("--input-steps", type=int, default=None)
 	ap.add_argument("--output-steps", type=int, default=None)
 	ap.add_argument("--window-stride", type=int, default=None)
-	ap.add_argument("--open-file-lru-size", type=int, default=None, help="文件句柄 LRU 大小")
-	ap.add_argument(
-		"--stitch-across-files",
-		action=argparse.BooleanOptionalAction,
-		default=None,
-		help="是否跨文件拼接时间轴后再切窗（默认读取 train.yaml）",
-	)
 	ap.add_argument("--epochs", type=int, default=None)
 	ap.add_argument("--batch-size", type=int, default=None)
 	ap.add_argument("--lr", type=float, default=None)

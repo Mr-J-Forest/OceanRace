@@ -155,3 +155,4 @@ python scripts/04_train_forecast.py --epochs 5 --batch-size 2 --help
 1. `01_data_inspect.py`：了解 raw 数据质量（可选 `--out` 保存 JSON）。
 2. `02_preprocess.py --task all --steps all`：清洗 → 划分 → 标准化参数 → 更新配置。
 3. **训练**：要素预报 `python scripts/04_train_forecast.py`；其它任务用 `src/<任务>/dataset.py` 或 `src/baseline/<任务>/`。
+| `gui_app.py` | Gradio构建的图形化界面，支持要素预测模型的可视化预测与预览（涡旋检测及异常检测预留入口）|

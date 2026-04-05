@@ -30,6 +30,9 @@ data/raw/*
 data/interim/
 # processed 下大文件仍忽略，但保留划分清单 JSON 可提交
 data/processed/*
+!data/processed/element_forecasting/
+data/processed/element_forecasting/*
+!data/processed/element_forecasting/path.txt
 !data/processed/splits/
 !data/processed/splits/**
 !data/processed/normalization/

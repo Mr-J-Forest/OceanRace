@@ -74,6 +74,7 @@ OceanRace/
 | `scripts/01_data_inspect.py` | 只读：抽样 `data/raw`，缺测率与最值（可 `--out JSON`） |
 | `scripts/02_preprocess.py` | 清洗 → `data/processed/`，可选整合大文件（`merge`）、划分与训练集标准化（`--steps`） |
 | `scripts/smoke_element_forecast.py` | 极少样本合成数据，跑 1 epoch 验证要素基线训练链路 |
+| `scripts/test_element/check_element_forecast_competition.py` | 要素预测比赛检查（单文件模式），支持滚动预测与重叠融合评估 |
 | `scripts/03_train_eddy.py` 等 | 训练/流水线/报告脚本（`03`–`07`）；要素预报用 `python scripts/04_train_forecast.py` |
 | `src/baseline/` | 基线实验代码（`PYTHONPATH=src`，如 `python -m baseline.element_forecasting.train`） |
 | `src/baseline/element_forecasting/README.md` | 要素 ConvLSTM 基线模块与运行方式 |
@@ -153,11 +154,34 @@ OceanRace/
 
 | 文件 | 要点 |
 |------|------|
-| `dataset.py` | 从 `data/processed/element_forecasting` 读 `*_clean.nc`；可选 split 与标准化 |
-| `model.py` | 注意力残差网络；多头自注意力；位置编码与残差 |
-| `trainer.py` | 多变量时序加载；序列到序列训练；早停与检查点 |
-| `predictor.py` | 输入约 10–15 天历史；输出未来 72 h（如 12 步）；可选不确定性 |
-| `evaluator.py` | MSE、RMSE、MAE；纳什效率系数；预测区间覆盖率 |
+| `dataset.py` | 单文件模式：读取 `all_clean_merged.nc`，按滑窗切样本并按时间比例切分 train/val/test |
+| `model.py` | 时空双轨 Transformer + block residual；多周期多谐波时间编码（`periodic_periods`/`periodic_harmonics`） |
+| `trainer.py` | 加权损失 + 空间均值约束；rollout 训练；scheduled sampling；梯度累积与 AMP |
+| `predictor.py` | 支持长时滚动预测与 overlap 线性融合（缓解 24h/48h 拼接台阶） |
+| `evaluator.py` | 掩膜 MSE/RMSE/MAE/NSE；按变量加权 MSE；空间均值约束损失 |
+
+**最新训练策略（已实现）**
+
+1. 变量加权与均值约束
+    - 训练损失中引入按变量权重加权的点位误差，提升 `sss`、`ssv` 的学习权重。
+    - 新增空间均值约束项，约束 `pred` 与 `target` 在每步每变量上的空间均值一致，抑制整体抬高偏置。
+
+2. Rollout 训练（多步对齐）
+    - 训练集标签长度扩展为 `model_output_steps * rollout_steps`。
+    - 每个 batch 内做多段前向并按 `rollout_gamma` 聚合段损失，强化多步稳定性。
+
+3. Scheduled Sampling
+    - 训练中段间输入按概率在“真实上一段标签 / 上一段预测”间混合。
+    - `epsilon` 按 epoch 衰减（支持 linear / cosine），缓解 teacher forcing 与推理不一致。
+
+4. 推理重叠融合
+    - 长时预测支持 `overlap_steps` 与线性融合，缓解分段拼接处的硬跳变。
+    - 比赛检查脚本已接入该能力，并可通过参数开关。
+
+**关键配置（`configs/element_forecasting/*.yaml`）**
+
+- 模型：`d_model`、`nhead`、`num_layers`、`spatial_downsample`、`periodic_periods`、`periodic_harmonics`
+- 训练：`rollout_steps`、`rollout_gamma`、`scheduled_sampling_*`、`overlap_*`、`var_loss_weights`、`loss_spatial_mean_weight`
 
 **指标：** 目标 MSE ≤15%；预测时长 72 小时；要素含温度、盐度、流速。
 

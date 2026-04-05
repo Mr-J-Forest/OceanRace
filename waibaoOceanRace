@@ -1,0 +1,46 @@
+[33m3754fa3[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mgui[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/gui[m[33m, [m[1;31morigin/element[m[33m, [m[1;31morigin/HEAD[m[33m)[m Merge main into element
+[33m8a1b7b2[m 统一分支进度
+[33m53e825d[m sync element forecasting updates and reports
+[33m5580460[m Update GUI visuals and limits
+[33m15bdac9[m gui:页面更改
+[33mfbb5228[m gui:彻底修复：输入没标准化
+[33mab672ee[m 1
+[33m4e47e55[m gui:全量预测管线包装
+[33mfcb65cb[m gui：修复预测偏差
+[33m30a508a[m gui：改进画图
+[33mbd2d936[m 更新requirements
+[33m24b64f8[m gui后端预测结果前端展示
+[33m9a122eb[m 要素预测：改正了指标检查
+[33m7d38a51[m[33m ([m[1;32mmain[m[33m)[m 修复gui的bug
+[33m79b4309[m 修复gui卡死问题
+[33m42c68b3[m 更新gui
+[33maa2771c[m 修复gui中文错误显示
+[33m4279d69[m 可视化
+[33m3d97abf[m 要素预测：引入多尺度空间融合与轻量细化头，新增梯度一致性/区域加权训练及空间细节评估指标
+[33m58fd7cc[m 改变路径读取规则
+[33m0fd85e1[m 要素预测：接入rollout训练、计划采样与重叠融合
+[33m33cf2f4[m 要素预测：新增均值约束与变量加权损失
+[33me8c0a6f[m element\add多周期谐波编码
+[33mc667315[m element性能优化
+[33md28860f[m Merge feature/element-st-dual-transformer into main
+[33m90c516b[m 移除不必要文件
+[33m2e7209b[m[33m ([m[1;31morigin/feature/element-st-dual-transformer[m[33m)[m 模型更改
+[33m371dbd2[m feat(element): refactor architecture to Spatio-Temporal Dual-Track Transformer
+[33ma093551[m 原本时间编码的模型性能优化
+[33m360369f[m chore: 忽略具体配置文件，替换为 example 示例模版
+[33m4cdf176[m 改进check性能
+[33mb181a89[m feat(element): add time/frequency loss, refactor evaluation output
+[33m21f605f[m style: optimize console logger output globally
+[33mca6be00[m element可跑有结果，待继续增强
+[33m568ce76[m 调整scripts目录结构
+[33mda72c74[m 改成单文件预测
+[33mf4610c0[m feat(preprocess): 新增按时序合并任务数据为总nc文件
+[33m7fd303a[m 完成要素预测,测试可用性与效果
+[33m6754064[m feat(preprocess): 抽取跨文件滑窗通用工具
+[33m8293c17[m 标准化参数上传，可以节省计算
+[33m151fb17[m utils/改进logger和visualizer，增加prompt
+[33mae6e253[m 项目结构更改：模型和训练参数改成各模块自行管理
+[33m4246949[m 完善
+[33m5a8717f[m 补充readme
+[33m43ace06[m data/模型可跑通，预处理模块完成
+[33mda6177d[m first commit/empty project with folders

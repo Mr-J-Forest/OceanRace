@@ -6,51 +6,65 @@ import json
 import torch
 
 from element_forecasting.dataset import ElementForecastWindowDataset
+from element_forecasting.evaluator import masked_spatial_mean_mse, masked_weighted_mse
 from element_forecasting.model import HybridElementForecastModel
 from element_forecasting.predictor import ElementForecastPredictor
-from element_forecasting.trainer import resolve_core_config
+from element_forecasting.trainer import (
+    _mix_rollout_input,
+    _scheduled_sampling_epsilon,
+    resolve_core_config,
+)
 from tests.conftest import write_element_clean_nc
 
 
-def test_dataset_cross_file_stitching_windows(tmp_path) -> None:
-    d = tmp_path / "data/processed/element_forecasting"
-    d.mkdir(parents=True)
-    f1 = d / "19940101_clean.nc"
-    f2 = d / "19940102_clean.nc"
+def test_dataset_single_file_split_windows(tmp_path) -> None:
+    data_file = tmp_path / "data/processed/element_forecasting/all_clean_merged.nc"
+    data_file.parent.mkdir(parents=True)
+    write_element_clean_nc(data_file, t=10, base=0.0, vars_names=("sst",))
 
-    # file1: sst=[0,1,2], file2: sst=[10,11,12]
-    write_element_clean_nc(f1, t=3, base=0.0, vars_names=("sst",))
-    write_element_clean_nc(f2, t=3, base=10.0, vars_names=("sst",))
-
-    ds_no_stitch = ElementForecastWindowDataset(
-        processed_dir=d,
+    # t=10, input+output=4 -> total windows=7
+    # split ratios 0.5/0.25/0.25 => train=3, val=1, test=3
+    ds_train = ElementForecastWindowDataset(
+        data_file=data_file,
         var_names=("sst",),
         input_steps=2,
         output_steps=2,
-        stitch_across_files=False,
-        split=None,
+        window_stride=1,
+        split="train",
+        split_ratios=(0.5, 0.25, 0.25),
         root=tmp_path,
     )
-    assert len(ds_no_stitch) == 0
-
-    ds_stitch = ElementForecastWindowDataset(
-        processed_dir=d,
+    ds_val = ElementForecastWindowDataset(
+        data_file=data_file,
         var_names=("sst",),
         input_steps=2,
         output_steps=2,
-        stitch_across_files=True,
-        split=None,
+        window_stride=1,
+        split="val",
+        split_ratios=(0.5, 0.25, 0.25),
         root=tmp_path,
     )
-    # total t=6, need=4 => windows=3
-    assert len(ds_stitch) == 3
+    ds_test = ElementForecastWindowDataset(
+        data_file=data_file,
+        var_names=("sst",),
+        input_steps=2,
+        output_steps=2,
+        window_stride=1,
+        split="test",
+        split_ratios=(0.5, 0.25, 0.25),
+        root=tmp_path,
+    )
 
-    s = ds_stitch[1]
+    assert len(ds_train) == 3
+    assert len(ds_val) == 1
+    assert len(ds_test) == 3
+
+    s = ds_train[1]
     x = s["x"][:, 0, 0, 0]
     y = s["y"][:, 0, 0, 0]
-    # global t=1: x=[1,2], y=[10,11]，跨文件拼接成功
+    # t0=1: x=[1,2], y=[3,4]
     assert torch.allclose(x, torch.tensor([1.0, 2.0]))
-    assert torch.allclose(y, torch.tensor([10.0, 11.0]))
+    assert torch.allclose(y, torch.tensor([3.0, 4.0]))
 
 
 def test_hybrid_model_forward_shape() -> None:
@@ -80,7 +94,6 @@ def test_dataset_single_data_file_mode(tmp_path) -> None:
         input_steps=3,
         output_steps=2,
         window_stride=1,
-        stitch_across_files=True,
         split=None,
         root=tmp_path,
     )
@@ -151,7 +164,6 @@ def test_resolve_core_config_override_priority() -> None:
         "var_names": ["t1", "t2", "t3"],
         "input_steps": 10,
         "window_stride": 3,
-        "stitch_across_files": False,
     }
 
     cfg = resolve_core_config(
@@ -159,7 +171,6 @@ def test_resolve_core_config_override_priority() -> None:
         args_input_steps=12,
         args_output_steps=6,
         args_window_stride=1,
-        args_stitch_across_files=True,
         train_cfg=train_cfg,
         model_cfg=model_cfg,
     )
@@ -168,7 +179,6 @@ def test_resolve_core_config_override_priority() -> None:
     assert cfg["input_steps"] == 12
     assert cfg["output_steps"] == 6
     assert cfg["window_stride"] == 1
-    assert cfg["stitch_across_files"] is True
 
     # 不提供 CLI 时，train_cfg 优先于 model_cfg
     cfg2 = resolve_core_config(
@@ -176,7 +186,6 @@ def test_resolve_core_config_override_priority() -> None:
         args_input_steps=None,
         args_output_steps=None,
         args_window_stride=None,
-        args_stitch_across_files=None,
         train_cfg=train_cfg,
         model_cfg=model_cfg,
     )
@@ -184,4 +193,105 @@ def test_resolve_core_config_override_priority() -> None:
     assert cfg2["input_steps"] == 10
     assert cfg2["output_steps"] == 4
     assert cfg2["window_stride"] == 3
-    assert cfg2["stitch_across_files"] is False
+
+
+def test_weighted_and_spatial_mean_losses() -> None:
+    # shape: [B=1, T=1, C=2, H=1, W=2]
+    pred = torch.tensor([[[[[0.0, 0.0]], [[0.0, 0.0]]]]])
+    target = torch.tensor([[[[[1.0, 1.0]], [[2.0, 2.0]]]]])
+    mask = torch.ones_like(pred)
+    channel_weights = torch.tensor([1.0, 2.0]).view(1, 1, 2, 1, 1)
+
+    # ch0 mse=1, ch1 mse=4; weighted mean=(1*1 + 4*2)/(1+2)=3
+    loss_point = masked_weighted_mse(pred, target, mask, channel_weights=channel_weights)
+    assert torch.allclose(loss_point, torch.tensor(3.0), atol=1e-6)
+
+    # 空间均值与逐点一致（每通道常数场）
+    loss_mean = masked_spatial_mean_mse(pred, target, mask, channel_weights=channel_weights)
+    assert torch.allclose(loss_mean, torch.tensor(3.0), atol=1e-6)
+
+
+def test_scheduled_sampling_epsilon_decay() -> None:
+    e0 = _scheduled_sampling_epsilon(
+        epoch=1,
+        total_epochs=10,
+        enabled=True,
+        start_epoch=3,
+        epsilon_start=1.0,
+        epsilon_min=0.4,
+        decay_type="linear",
+    )
+    e_mid = _scheduled_sampling_epsilon(
+        epoch=6,
+        total_epochs=10,
+        enabled=True,
+        start_epoch=3,
+        epsilon_start=1.0,
+        epsilon_min=0.4,
+        decay_type="linear",
+    )
+    e_end = _scheduled_sampling_epsilon(
+        epoch=10,
+        total_epochs=10,
+        enabled=True,
+        start_epoch=3,
+        epsilon_start=1.0,
+        epsilon_min=0.4,
+        decay_type="linear",
+    )
+    assert e0 == 1.0
+    assert e_end <= e_mid <= e0
+    assert e_end >= 0.4
+
+
+def test_mix_rollout_input_endpoints() -> None:
+    pred = torch.zeros(2, 3, 1, 2, 2)
+    target = torch.ones(2, 3, 1, 2, 2)
+
+    out_tf = _mix_rollout_input(pred_chunk=pred, target_chunk=target, epsilon=1.0, enabled=True)
+    out_ar = _mix_rollout_input(pred_chunk=pred, target_chunk=target, epsilon=0.0, enabled=True)
+    out_disabled = _mix_rollout_input(pred_chunk=pred, target_chunk=target, epsilon=0.0, enabled=False)
+
+    assert torch.allclose(out_tf, target)
+    assert torch.allclose(out_ar, pred)
+    assert torch.allclose(out_disabled, target)
+
+
+def test_predictor_long_horizon_overlap_blend() -> None:
+    predictor = ElementForecastPredictor.__new__(ElementForecastPredictor)
+    predictor.device = torch.device("cpu")
+    predictor.input_steps = 6
+    predictor.output_steps = 6
+    predictor.var_names = ("sst",)
+    predictor._norm = None
+
+    calls = {"n": 0}
+
+    def fake_predict(x: torch.Tensor, denormalize: bool = False, return_cpu: bool = False):
+        base = float(calls["n"] * 10.0)
+        calls["n"] += 1
+        pred = torch.full((x.shape[0], 6, 1, 1, 1), base, dtype=torch.float32, device=x.device)
+        return {
+            "pred": pred,
+            "pred_transformer": pred,
+            "var_names": predictor.var_names,
+            "denormalized": denormalize,
+        }
+
+    predictor.predict = fake_predict  # type: ignore[method-assign]
+
+    x = torch.zeros(1, 6, 1, 1, 1)
+    out = predictor.predict_long_horizon(
+        x=x,
+        target_steps=10,
+        overlap_steps=4,
+        enable_overlap_blend=True,
+        denormalize=False,
+        return_cpu=True,
+    )
+    pred = out["pred"].squeeze(-1).squeeze(-1).squeeze(-1)
+    # 线性融合后，边界处不应出现从 0 直接跳到 10 的硬跳变。
+    assert pred.shape[1] == 10
+    assert float(pred[0, 2]) < float(pred[0, 5])
+    assert float(pred[0, 2]) == 0.0
+    assert float(pred[0, 3]) > 0.0

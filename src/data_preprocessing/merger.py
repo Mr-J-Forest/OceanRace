@@ -171,7 +171,10 @@ def run_merge_for_task(
         if limit is not None:
             files = files[: max(0, limit)]
         out = root / cfg["paths"]["processed"]["element_forecasting"] / "all_clean_merged.nc"
-        return [_merge_files(files, out, complevel)]
+        result = _merge_files(files, out, complevel)
+        path_txt = root / cfg["paths"]["processed"]["element_forecasting"] / "path.txt"
+        path_txt.write_text(str(result.resolve()), encoding="utf-8")
+        return [result]
 
     if task == TASK_ANOMALY:
         year_dirs = list_processed_anomaly(cfg, root)

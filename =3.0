@@ -1,0 +1,104 @@
+Looking in indexes: http://mirrors.aliyun.com/pypi/simple
+Collecting gradio
+  Downloading http://mirrors.aliyun.com/pypi/packages/f1/5b/c816b9dd76a2e5e502aa25833c43cc00574c2579c0db84e79e93c5d13c4c/gradio-6.11.0-py3-none-any.whl (36.8 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 36.8/36.8 MB 14.7 MB/s eta 0:00:00
+Collecting aiofiles<25.0,>=22.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/a5/45/30bb92d442636f570cb5651bc661f52b610e2eec3f891a5dc3a4c3667db0/aiofiles-24.1.0-py3-none-any.whl (15 kB)
+Requirement already satisfied: anyio<5.0,>=3.0 in /root/miniconda3/lib/python3.12/site-packages (from gradio) (4.10.0)
+Collecting brotli>=1.1.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/03/a7/03aa61fbc3c5cbf99b44d158665f9b0dd3d8059be16c460208d9e385c837/brotli-1.2.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (1.4 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.4/1.4 MB 22.5 MB/s eta 0:00:00
+Collecting fastapi<1.0,>=0.115.2 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/84/a4/5caa2de7f917a04ada20018eccf60d6cc6145b0199d55ca3711b0fc08312/fastapi-0.135.3-py3-none-any.whl (117 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 117.7/117.7 kB 22.2 MB/s eta 0:00:00
+Collecting ffmpy (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/55/56/dd3669eccebb6d8ac81e624542ebd53fe6f08e1b8f2f8d50aeb7e3b83f99/ffmpy-1.0.0-py3-none-any.whl (5.6 kB)
+Collecting gradio-client==2.4.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/f0/b3/10cb03cf684aab2bec97cb0b9bbba4f93e7a20c6e0f3b4100c235a55ad93/gradio_client-2.4.0-py3-none-any.whl (59 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 59.2/59.2 kB 15.5 MB/s eta 0:00:00
+Collecting groovy~=0.1 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/28/27/3d6dcadc8a3214d8522c1e7f6a19554e33659be44546d44a2f7572ac7d2a/groovy-0.1.2-py3-none-any.whl (14 kB)
+Collecting hf-gradio<1.0,>=0.3.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/4c/52/04816d2a15691a63cec3187e3e592c4493448eb4834492eadd532972b035/hf_gradio-0.3.0-py3-none-any.whl (4.2 kB)
+Requirement already satisfied: httpx<1.0,>=0.24.1 in /root/miniconda3/lib/python3.12/site-packages (from gradio) (0.28.1)
+Collecting huggingface-hub<2.0,>=0.33.5 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/73/37/0d15d16150e1829f3e90962c99f28257f6de9e526a680b4c6f5acdb54fd2/huggingface_hub-1.9.0-py3-none-any.whl (637 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 637.4/637.4 kB 27.6 MB/s eta 0:00:00
+Requirement already satisfied: jinja2<4.0 in /root/miniconda3/lib/python3.12/site-packages (from gradio) (3.1.6)
+Requirement already satisfied: markupsafe<4.0,>=2.0 in /root/miniconda3/lib/python3.12/site-packages (from gradio) (3.0.2)
+Requirement already satisfied: numpy<3.0,>=1.0 in /root/miniconda3/lib/python3.12/site-packages (from gradio) (2.3.2)
+Collecting orjson~=3.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/37/87/5ddeb7fc1fbd9004aeccab08426f34c81a5b4c25c7061281862b015fce2b/orjson-3.11.8-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (133 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 133.6/133.6 kB 26.7 MB/s eta 0:00:00
+Requirement already satisfied: packaging in /root/miniconda3/lib/python3.12/site-packages (from gradio) (26.0)
+Requirement already satisfied: pandas<4.0,>=1.0 in /root/miniconda3/lib/python3.12/site-packages (from gradio) (3.0.2)
+Requirement already satisfied: pillow<13.0,>=8.0 in /root/miniconda3/lib/python3.12/site-packages (from gradio) (11.3.0)
+Collecting pydantic<=3.0,>=2.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/5a/87/b70ad306ebb6f9b585f114d0ac2137d792b48be34d732d60e597c2f8465a/pydantic-2.12.5-py3-none-any.whl (463 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 463.6/463.6 kB 30.7 MB/s eta 0:00:00
+Collecting pydub (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/a6/53/d78dc063216e62fc55f6b2eebb447f6a4b0a59f55c8406376f76bf959b08/pydub-0.25.1-py2.py3-none-any.whl (32 kB)
+Collecting python-multipart>=0.0.18 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/1b/d0/397f9626e711ff749a95d96b7af99b9c566a9bb5129b8e4c10fc4d100304/python_multipart-0.0.22-py3-none-any.whl (24 kB)
+Collecting pytz>=2017.2 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/10/99/781fe0c827be2742bcc775efefccb3b048a3a9c6ce9aec0cbf4a101677e5/pytz-2026.1.post1-py2.py3-none-any.whl (510 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 510.5/510.5 kB 29.0 MB/s eta 0:00:00
+Requirement already satisfied: pyyaml<7.0,>=5.0 in /root/miniconda3/lib/python3.12/site-packages (from gradio) (6.0.2)
+Collecting safehttpx<0.2.0,>=0.1.7 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/2e/a3/0f0b7d78e2f1eb9e8e1afbff1d2bff8d60144aee17aca51c065b516743dd/safehttpx-0.1.7-py3-none-any.whl (9.0 kB)
+Collecting semantic-version~=2.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/6a/23/8146aad7d88f4fcb3a6218f41a60f6c2d4e3a72de72da1825dc7c8f7877c/semantic_version-2.10.0-py2.py3-none-any.whl (15 kB)
+Collecting starlette<2.0,>=0.40.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl (72 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 72.7/72.7 kB 22.4 MB/s eta 0:00:00
+Collecting tomlkit<0.14.0,>=0.12.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/bd/75/8539d011f6be8e29f339c42e633aae3cb73bffa95dd0f9adec09b9c58e85/tomlkit-0.13.3-py3-none-any.whl (38 kB)
+Collecting typer<1.0,>=0.12 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/4a/91/48db081e7a63bb37284f9fbcefda7c44c277b18b0e13fbc36ea2335b71e6/typer-0.24.1-py3-none-any.whl (56 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 56.1/56.1 kB 22.6 MB/s eta 0:00:00
+Requirement already satisfied: typing-extensions~=4.0 in /root/miniconda3/lib/python3.12/site-packages (from gradio) (4.14.1)
+Collecting uvicorn>=0.14.0 (from gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/0a/89/f8827ccff89c1586027a105e5630ff6139a64da2515e24dafe860bd9ae4d/uvicorn-0.42.0-py3-none-any.whl (68 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 68.8/68.8 kB 18.9 MB/s eta 0:00:00
+Requirement already satisfied: fsspec in /root/miniconda3/lib/python3.12/site-packages (from gradio-client==2.4.0->gradio) (2025.7.0)
+Requirement already satisfied: idna>=2.8 in /root/miniconda3/lib/python3.12/site-packages (from anyio<5.0,>=3.0->gradio) (3.7)
+Requirement already satisfied: sniffio>=1.1 in /root/miniconda3/lib/python3.12/site-packages (from anyio<5.0,>=3.0->gradio) (1.3.1)
+Collecting typing-inspection>=0.4.2 (from fastapi<1.0,>=0.115.2->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/dc/9b/47798a6c91d8bdb567fe2698fe81e0c6b7cb7ef4d13da4114b41d239f65d/typing_inspection-0.4.2-py3-none-any.whl (14 kB)
+Collecting annotated-doc>=0.0.2 (from fastapi<1.0,>=0.115.2->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl (5.3 kB)
+Requirement already satisfied: certifi in /root/miniconda3/lib/python3.12/site-packages (from httpx<1.0,>=0.24.1->gradio) (2024.2.2)
+Requirement already satisfied: httpcore==1.* in /root/miniconda3/lib/python3.12/site-packages (from httpx<1.0,>=0.24.1->gradio) (1.0.9)
+Requirement already satisfied: h11>=0.16 in /root/miniconda3/lib/python3.12/site-packages (from httpcore==1.*->httpx<1.0,>=0.24.1->gradio) (0.16.0)
+Requirement already satisfied: filelock>=3.10.0 in /root/miniconda3/lib/python3.12/site-packages (from huggingface-hub<2.0,>=0.33.5->gradio) (3.18.0)
+Collecting hf-xet<2.0.0,>=1.4.3 (from huggingface-hub<2.0,>=0.33.5->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/df/9a/a24b26dc8a65f0ecc0fe5be981a19e61e7ca963b85e062c083f3a9100529/hf_xet-1.4.3-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.2/4.2 MB 41.4 MB/s eta 0:00:00
+Requirement already satisfied: tqdm>=4.42.1 in /root/miniconda3/lib/python3.12/site-packages (from huggingface-hub<2.0,>=0.33.5->gradio) (4.66.2)
+Requirement already satisfied: python-dateutil>=2.8.2 in /root/miniconda3/lib/python3.12/site-packages (from pandas<4.0,>=1.0->gradio) (2.9.0.post0)
+Collecting annotated-types>=0.6.0 (from pydantic<=3.0,>=2.0->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/78/b6/6307fbef88d9b5ee7421e68d78a9f162e0da4900bc5f5793f6d3d0e34fb8/annotated_types-0.7.0-py3-none-any.whl (13 kB)
+Collecting pydantic-core==2.41.5 (from pydantic<=3.0,>=2.0->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/0d/76/941cc9f73529988688a665a5c0ecff1112b3d95ab48f81db5f7606f522d3/pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 85.9 MB/s eta 0:00:00
+Collecting click>=8.2.1 (from typer<1.0,>=0.12->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/98/78/01c019cdb5d6498122777c1a43056ebb3ebfeef2076d9d026bfe15583b2b/click-8.3.1-py3-none-any.whl (108 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 108.3/108.3 kB 44.7 MB/s eta 0:00:00
+Collecting shellingham>=1.3.0 (from typer<1.0,>=0.12->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+Collecting rich>=12.3.0 (from typer<1.0,>=0.12->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/14/25/b208c5683343959b670dc001595f2f3737e051da617f66c31f7c4fa93abc/rich-14.3.3-py3-none-any.whl (310 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 310.5/310.5 kB 50.9 MB/s eta 0:00:00
+Requirement already satisfied: six>=1.5 in /root/miniconda3/lib/python3.12/site-packages (from python-dateutil>=2.8.2->pandas<4.0,>=1.0->gradio) (1.17.0)
+Collecting markdown-it-py>=2.2.0 (from rich>=12.3.0->typer<1.0,>=0.12->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/94/54/e7d793b573f298e1c9013b8c4dade17d481164aa517d1d7148619c2cedbf/markdown_it_py-4.0.0-py3-none-any.whl (87 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 87.3/87.3 kB 39.0 MB/s eta 0:00:00
+Requirement already satisfied: pygments<3.0.0,>=2.13.0 in /root/miniconda3/lib/python3.12/site-packages (from rich>=12.3.0->typer<1.0,>=0.12->gradio) (2.19.2)
+Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=12.3.0->typer<1.0,>=0.12->gradio)
+  Downloading http://mirrors.aliyun.com/pypi/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Installing collected packages: pytz, pydub, brotli, typing-inspection, tomlkit, shellingham, semantic-version, python-multipart, pydantic-core, orjson, mdurl, hf-xet, groovy, ffmpy, click, annotated-types, annotated-doc, aiofiles, uvicorn, starlette, pydantic, markdown-it-py, safehttpx, rich, fastapi, typer, huggingface-hub, gradio-client, hf-gradio, gradio
+  Attempting uninstall: brotli
+    Found existing installation: Brotli 1.0.9
+    Uninstalling Brotli-1.0.9:
+      Successfully uninstalled Brotli-1.0.9
+Successfully installed aiofiles-24.1.0 annotated-doc-0.0.4 annotated-types-0.7.0 brotli-1.2.0 click-8.3.1 fastapi-0.135.3 ffmpy-1.0.0 gradio-6.11.0 gradio-client-2.4.0 groovy-0.1.2 hf-gradio-0.3.0 hf-xet-1.4.3 huggingface-hub-1.9.0 markdown-it-py-4.0.0 mdurl-0.1.2 orjson-3.11.8 pydantic-2.12.5 pydantic-core-2.41.5 pydub-0.25.1 python-multipart-0.0.22 pytz-2026.1.post1 rich-14.3.3 safehttpx-0.1.7 semantic-version-2.10.0 shellingham-1.5.4 starlette-1.0.0 tomlkit-0.13.3 typer-0.24.1 typing-inspection-0.4.2 uvicorn-0.42.0

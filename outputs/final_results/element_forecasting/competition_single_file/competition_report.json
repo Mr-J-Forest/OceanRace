@@ -1,14 +1,14 @@
 {
   "task": "element_forecasting",
   "mode": "single_file",
-  "checkpoint": "D:\\OceanProjects\\OceanRace\\outputs\\element_forecasting\\checkpoints\\hybrid_best.pt",
+  "checkpoint": "/OceanRace/outputs/element_forecasting/checkpoints/hybrid_best.pt",
   "dataset": {
-    "data_file": "D:\\OceanProjects\\OceanRace\\data\\processed\\element_forecasting\\all_clean_merged.nc",
+    "data_file": "/OceanRace/data/processed/element_forecasting/path.txt",
     "split": "test",
     "total_windows": 47758,
-    "selected_windows": 4777,
+    "selected_windows": 7165,
     "single_file_train_ratio": 0.7,
-    "single_file_val_ratio": 0.2
+    "single_file_val_ratio": 0.15
   },
   "model": {
     "var_names": [
@@ -29,29 +29,32 @@
     "mse_percent_max": 15.0
   },
   "metrics": {
-    "mse": 0.8054177176392282,
-    "rmse": 0.8974506769952476,
-    "mae": 0.34667857149582393,
-    "nse": 0.9956821764583509,
-    "relative_mse_percent": 0.2477048222638402
+    "mse": 0.2858618525703653,
+    "rmse": 0.5346605021603572,
+    "mae": 0.26366410528834794,
+    "nse": 0.9984792796758009,
+    "relative_mse_percent": 24.778516609288037
   },
   "pass": {
     "horizon": true,
-    "mse_percent": true,
-    "overall": true
+    "mse_percent": false,
+    "overall": false
   },
   "artifacts": {
-    "per_horizon_csv": "D:\\OceanProjects\\OceanRace\\outputs\\final_results\\element_forecasting\\competition_single_file\\per_horizon_metrics.csv",
+    "per_horizon_csv": "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/per_horizon_metrics.csv",
     "figures": [
-      "D:\\OceanProjects\\OceanRace\\outputs\\final_results\\element_forecasting\\competition_single_file\\figures\\horizon_metrics.png",
-      "D:\\OceanProjects\\OceanRace\\outputs\\final_results\\element_forecasting\\competition_single_file\\figures\\competition_threshold_comparison.png",
-      "D:\\OceanProjects\\OceanRace\\outputs\\final_results\\element_forecasting\\competition_single_file\\figures\\sample_timeseries_spatial_mean.png",
-      "D:\\OceanProjects\\OceanRace\\outputs\\final_results\\element_forecasting\\competition_single_file\\figures\\sample_last_horizon_map_var0.png"
+      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/horizon_metrics.png",
+      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/competition_threshold_comparison.png",
+      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_timeseries_spatial_mean.png",
+      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_last_horizon_map_sst.png",
+      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_last_horizon_map_sss.png",
+      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_last_horizon_map_ssu.png",
+      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_last_horizon_map_ssv.png"
     ]
   },
   "notes": [
     "evaluation is single-file only and uses rolling autoregressive forecasting",
-    "relative_mse_percent = sum((pred-target)^2)/sum(target^2)*100 on valid mask",
+    "relative_mse_percent = sum((pred_std-y_std)^2)/sum(y_std^2)*100 on valid mask",
     "if time_step_hours is not 1, pass --time-step-hours explicitly"
   ]
 }
