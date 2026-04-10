@@ -36,12 +36,18 @@ periodic_periods:
   - 168.0
 periodic_harmonics: 2
 
-# 多专家融合（UNet + ConvLSTM）
+# 多专家融合（UNet + TrajGRU）
 moe_enabled: true
 moe_unet_base_channels: 48
 moe_convlstm_hidden_channels: 64
 moe_convlstm_kernel_size: 3
+moe_trajgru_hidden_channels: 64
+moe_trajgru_kernel_size: 3
+moe_trajgru_num_links: 9
+moe_trajgru_flow_hidden_channels: 32
+moe_trajgru_flow_clip: 4.0
 moe_transformer_fusion_alpha: 0.45
+moe_residual_beta: 0.3
 moe_focus_vars:
   - ssu
   - ssv

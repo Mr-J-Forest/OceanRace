@@ -1,27 +1,27 @@
 # 要素预测模块 (Element Forecasting)
 
-当前模块为纯深度学习方案，主模型名称保留为 HybridElementForecastModel（兼容既有调用），默认预测路径采用 Transformer + UNet + ConvLSTM 多专家融合。
+当前模块为纯深度学习方案，主模型名称保留为 HybridElementForecastModel（兼容既有调用），默认预测路径采用 ViT 时空 Transformer + UNet + TrajGRU 多专家融合。
 
 ## 模型结构
 
-1. 时空双轨 Transformer
+1. 时空双轨 Transformer（ViT 风格）
    - 空间分支：对每个时刻做 patch embedding 后进行空间注意力编码。
    - 时间分支：将空间 token 重排后沿时间轴做 Transformer 编码。
-   - 时间分支采用 BlockResidualTransformerEncoder，在每层 Attention 和 MLP 前注入 block-level residual context。
+   - 输出头采用“共享特征 + 按变量独立多头”：`shared_features -> sst/sss/ssu/ssv`，每个变量头为 `Conv -> GELU -> Conv`。
 
 2. 多专家融合（新增）
    - UNet 专家：将输入时间窗展平到通道维度，通过轻量 U-Net 强化局地空间纹理。
-   - ConvLSTM 专家：沿时间维编码后解码多步输出，强化时序动力连续性。
-   - 门控融合：由最后时刻特征生成 `softmax` 门控权重，按样本动态融合 UNet / ConvLSTM。
-   - 与 Transformer 融合：`pred = alpha * pred_transformer + (1-alpha) * pred_experts`，其中 `alpha=moe_transformer_fusion_alpha`。
+   - TrajGRU 专家：通过可学习轨迹偏移进行重采样后门控更新，强化非刚性平流/旋转形变建模。
+   - 门控融合：由最后时刻特征生成 `softmax` 门控权重，按样本动态融合 UNet / TrajGRU。
+   - 与 Transformer 融合：`pred = pred_transformer + beta * pred_experts`，其中 `beta=moe_residual_beta`（默认 0.3）。
    - ssu/ssv 定向增强：对 `moe_focus_vars` 指定变量（默认 ssu、ssv）额外注入专家残差，降低矢量流场误差。
 
 3. 输出
    - pred：最终融合预测结果。
    - pred_transformer：Transformer 分支预测结果。
    - pred_unet：UNet 专家分支预测结果。
-   - pred_convlstm：ConvLSTM 专家分支预测结果。
-   - moe_gate_weights：每个样本的专家门控权重（2 维，UNet/ConvLSTM）。
+   - pred_convlstm：TrajGRU 专家分支预测结果（为兼容历史接口保留该 key 名称）。
+   - moe_gate_weights：每个样本的专家门控权重（2 维，UNet/TrajGRU）。
    - 推理器默认可做反标准化，恢复到物理量纲（可关闭）。
 
 4. 周期性时间编码（已升级）
@@ -57,7 +57,10 @@
 
 1. 支持 AMP、梯度累积、多进程 DataLoader。
 2. 支持 spatial_downsample 以降低空间 token 数和显存压力。
-3. 训练损失由主损失、Transformer/UNet/ConvLSTM 辅助损失、空间均值约束、变量聚焦损失、梯度一致性与边缘损失组成；当前默认 `loss_gradient_consistency_weight=0.12`、`loss_edge_weight=0.03(sobel)`。
+3. 训练损失由“物理主损失 + Transformer/UNet/TrajGRU 辅助损失 + 空间均值约束 + 变量聚焦损失 + 梯度一致性与边缘损失”组成；其中主损失拆分为：
+   - 速度场损失：`L_uv_mse + λ1*L_div + λ2*L_smooth + λ3*L_mag`
+   - 标量场损失：`L_mse + λ4*L_anom + λ5*L_adv + λ6*L_grad`（`L_adv` 基于 `grid_sample` 的可微分平流 warp）
+   - 总主损失：`L_total = L_sst + L_sss + 2.0 * L_uv`
 4. 新增 `loss_focus_vars_weight` 对 `moe_focus_vars`（默认 ssu/ssv）做专项加权，优先压低流速分量误差。
 5. 模型单段预测默认采用 24→24；为最小化 72 小时滚动误差，训练默认使用 `rollout_steps=3`（24×3=72）。`rollout_gamma` 允许大于 1，用于显式增强后续 rollout 块的惩罚权重。
 6. Scheduled Sampling 默认从首个 epoch 开始，`epsilon` 由 `1.0` 按 cosine 衰减到 `0.08`，减轻训练-推理曝光偏差。
@@ -81,8 +84,9 @@
    - refine_head_hidden_ratio=1.5, refine_head_num_layers=4
    - d_model, nhead, num_layers, block_size, dropout, spatial_downsample
    - periodic_periods, periodic_harmonics
-   - moe_enabled, moe_unet_base_channels, moe_convlstm_hidden_channels, moe_convlstm_kernel_size
-   - moe_transformer_fusion_alpha, moe_focus_vars, moe_focus_boost
+   - moe_enabled, moe_unet_base_channels
+   - moe_trajgru_hidden_channels, moe_trajgru_kernel_size, moe_trajgru_num_links, moe_trajgru_flow_hidden_channels, moe_trajgru_flow_clip
+   - moe_residual_beta, moe_focus_vars, moe_focus_boost
 
 2. 训练配置：configs/element_forecasting/train.yaml
    - data_file, norm_stats_path
@@ -95,7 +99,9 @@
    - overlap_blend_enabled, overlap_steps
    - loss_aux_unet_weight, loss_aux_convlstm_weight, loss_focus_vars_weight
    - moe_focus_vars（用于构建专项通道损失）
-   - loss_gradient_consistency_weight=0.12, loss_edge_weight=0.03, edge_loss_type=sobel
+   - loss_uv_div_lambda, loss_uv_smooth_lambda, loss_uv_mag_lambda, loss_uv_div_target_zero
+   - loss_scalar_anom_lambda, loss_scalar_adv_lambda, loss_scalar_grad_lambda
+   - loss_gradient_consistency_weight, loss_edge_weight, edge_loss_type
 
 ## 兼容性说明
 
@@ -125,4 +131,3 @@
 
 1. 训练与验证 DataLoader 已分离并发配置：`num_workers` 仅用于训练，`val_num_workers` 仅用于验证。
 2. 默认验证侧使用 `val_num_workers=0`，并关闭 `persistent_workers/prefetch`，减少中途被系统 OOM-kill 的风险。
-

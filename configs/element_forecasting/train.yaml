@@ -28,11 +28,11 @@ test_ratio: 0.15
 open_file_lru_size: 2
 
 # 训练超参数
-epochs: 4
+epochs: 10
 batch_size: 4
 val_batch_size: 1
 lr: 0.0001
-num_workers: 8
+num_workers: 12
 val_num_workers: 0
 device: auto
 amp: true
@@ -72,9 +72,9 @@ loss_main_weight: 1.0
 loss_aux_transformer_weight: 0.2
 loss_aux_unet_weight: 0.15
 loss_aux_convlstm_weight: 0.15
-loss_spatial_mean_weight: 0.25
-loss_aux_spatial_mean_weight: 0.05
-loss_focus_vars_weight: 0.2
+loss_spatial_mean_weight: 0.10
+loss_aux_spatial_mean_weight: 0.02
+loss_focus_vars_weight: 0.5
 
 # 与 model.yaml 一致的变量聚焦配置（用于构建通道专项损失）
 moe_focus_vars:
@@ -82,9 +82,18 @@ moe_focus_vars:
   - ssv
 
 # 空间细节损失
-loss_gradient_consistency_weight: 0.12
-loss_edge_weight: 0.03
+loss_gradient_consistency_weight: 0.30
+loss_edge_weight: 0.15
 edge_loss_type: sobel
+
+# 速度场/标量场物理损失
+loss_uv_div_lambda: 0.1
+loss_uv_smooth_lambda: 0.2
+loss_uv_mag_lambda: 0.1
+loss_uv_div_target_zero: false
+loss_scalar_anom_lambda: 0.5
+loss_scalar_adv_lambda: 1.0
+loss_scalar_grad_lambda: 0.2
 
 # 区域加权（在线梯度权重）
 region_weighting_enabled: true
@@ -98,9 +107,9 @@ eval_extended_spatial_metrics: true
 # 变量损失权重（抑制 sst 主导，提升 sss/ssv 关注度）
 var_loss_weights:
   sst: 1.0
-  sss: 1.8
-  ssu: 1.0
-  ssv: 1.8
+  sss: 1.2
+  ssu: 5.0
+  ssv: 5.0
 
 # 输出目录（中间产物）
 output_dir: outputs/element_forecasting

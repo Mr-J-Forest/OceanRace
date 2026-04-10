@@ -22,6 +22,7 @@ from element_forecasting.evaluator import (
 	masked_spatial_mean_mse,
 	masked_weighted_mse,
 )
+from element_forecasting.physics_losses import velocity_scalar_composite_loss
 from element_forecasting.model import HybridElementForecastModel
 from utils.logger import get_logger, setup_logging, tqdm, tqdm_logging
 
@@ -207,6 +208,14 @@ def _rollout_composite_train_style_loss(
 	loss_gradient_consistency_weight: float,
 	loss_edge_weight: float,
 	edge_loss_type: str,
+	var_to_idx: dict[str, int],
+	lambda_div: float,
+	lambda_smooth: float,
+	lambda_mag: float,
+	lambda_anom: float,
+	lambda_adv: float,
+	lambda_grad: float,
+	div_target_zero: bool,
 	input_steps: int,
 ) -> torch.Tensor:
 	"""验证阶段使用与训练一致的 rollout 组合损失。"""
@@ -240,12 +249,19 @@ def _rollout_composite_train_style_loss(
 		pred_unet = out["pred_unet"][:, : y_chunk.shape[1]]
 		pred_convlstm = out["pred_convlstm"][:, : y_chunk.shape[1]]
 
-		loss_main = masked_weighted_mse(
-			pred,
-			y_chunk,
-			y_valid_chunk,
-			channel_weights=channel_weights,
-			spatial_weights=spatial_weights,
+		loss_main, _ = velocity_scalar_composite_loss(
+			pred=pred,
+			target=y_chunk,
+			mask=y_valid_chunk,
+			input_last_frame=cur_x[:, -1],
+			var_to_idx=var_to_idx,
+			lambda_div=lambda_div,
+			lambda_smooth=lambda_smooth,
+			lambda_mag=lambda_mag,
+			lambda_anom=lambda_anom,
+			lambda_adv=lambda_adv,
+			lambda_grad=lambda_grad,
+			div_target_zero=div_target_zero,
 		)
 		loss_aux = masked_weighted_mse(
 			pred_transformer,
@@ -383,6 +399,7 @@ def run_training(args: argparse.Namespace) -> None:
 		model_cfg=model_cfg,
 	)
 	var_names = core["var_names"]
+	var_to_idx = {str(v): i for i, v in enumerate(var_names)}
 	input_steps = core["input_steps"]
 	model_output_steps = core["output_steps"]
 	rollout_steps = max(1, int(train_cfg.get("rollout_steps", 1)))
@@ -526,7 +543,7 @@ def run_training(args: argparse.Namespace) -> None:
 
 	sample = train_ds[0]
 	in_channels = int(sample["x"].shape[1])
-	moe_focus_vars_cfg = model_cfg.get("moe_focus_vars", train_cfg.get("moe_focus_vars", ["ssu", "ssv"]))
+	moe_focus_vars_cfg = model_cfg.get("moe_focus_vars", train_cfg.get("moe_focus_vars", list(var_names)))
 	if isinstance(moe_focus_vars_cfg, str):
 		moe_focus_vars = tuple(v.strip() for v in moe_focus_vars_cfg.split(",") if v.strip())
 	elif isinstance(moe_focus_vars_cfg, (list, tuple)):
@@ -535,6 +552,7 @@ def run_training(args: argparse.Namespace) -> None:
 		moe_focus_vars = tuple()
 	moe_focus_indices = tuple(i for i, v in enumerate(var_names) if v in set(moe_focus_vars))
 	model_cfg_export = dict(model_cfg)
+	model_cfg_export["transformer_type"] = "vit"
 	model_cfg_export["moe_focus_vars"] = list(moe_focus_vars)
 	model_cfg_export["moe_focus_channel_indices"] = list(moe_focus_indices)
 
@@ -542,9 +560,9 @@ def run_training(args: argparse.Namespace) -> None:
 		in_channels=in_channels,
 		input_steps=input_steps,
 		output_steps=model_output_steps,
-		d_model=int(model_cfg.get("d_model", 128)),
-		nhead=int(model_cfg.get("nhead", 4)),
-		num_layers=int(model_cfg.get("num_layers", 6)),
+		d_model=int(model_cfg.get("vit_d_model", model_cfg.get("d_model", 128))),
+		nhead=int(model_cfg.get("vit_nhead", model_cfg.get("nhead", 4))),
+		num_layers=int(model_cfg.get("vit_num_layers", model_cfg.get("num_layers", 6))),
 		block_size=int(model_cfg.get("block_size", 4)),
 		dropout=float(model_cfg.get("dropout", 0.1)),
 		spatial_downsample=int(model_cfg.get("spatial_downsample", 4)),
@@ -562,7 +580,21 @@ def run_training(args: argparse.Namespace) -> None:
 		moe_unet_base_channels=int(model_cfg.get("moe_unet_base_channels", 48)),
 		moe_convlstm_hidden_channels=int(model_cfg.get("moe_convlstm_hidden_channels", 64)),
 		moe_convlstm_kernel_size=int(model_cfg.get("moe_convlstm_kernel_size", 3)),
+		moe_trajgru_hidden_channels=(
+			int(model_cfg["moe_trajgru_hidden_channels"])
+			if model_cfg.get("moe_trajgru_hidden_channels", None) is not None
+			else None
+		),
+		moe_trajgru_kernel_size=(
+			int(model_cfg["moe_trajgru_kernel_size"])
+			if model_cfg.get("moe_trajgru_kernel_size", None) is not None
+			else None
+		),
+		moe_trajgru_num_links=int(model_cfg.get("moe_trajgru_num_links", 9)),
+		moe_trajgru_flow_hidden_channels=int(model_cfg.get("moe_trajgru_flow_hidden_channels", 32)),
+		moe_trajgru_flow_clip=float(model_cfg.get("moe_trajgru_flow_clip", 4.0)),
 		moe_transformer_fusion_alpha=float(model_cfg.get("moe_transformer_fusion_alpha", 0.45)),
+		moe_residual_beta=float(model_cfg.get("moe_residual_beta", 0.3)),
 		moe_focus_channel_indices=moe_focus_indices,
 		moe_focus_boost=float(model_cfg.get("moe_focus_boost", 0.25)),
 	).to(device)
@@ -579,6 +611,13 @@ def run_training(args: argparse.Namespace) -> None:
 	loss_gradient_consistency_weight = float(train_cfg.get("loss_gradient_consistency_weight", 0.0))
 	loss_edge_weight = float(train_cfg.get("loss_edge_weight", 0.0))
 	edge_loss_type = str(train_cfg.get("edge_loss_type", "sobel"))
+	lambda_div = float(train_cfg.get("loss_uv_div_lambda", 0.1))
+	lambda_smooth = float(train_cfg.get("loss_uv_smooth_lambda", 0.2))
+	lambda_mag = float(train_cfg.get("loss_uv_mag_lambda", 0.1))
+	lambda_anom = float(train_cfg.get("loss_scalar_anom_lambda", 0.5))
+	lambda_adv = float(train_cfg.get("loss_scalar_adv_lambda", 1.0))
+	lambda_grad = float(train_cfg.get("loss_scalar_grad_lambda", 0.2))
+	div_target_zero = bool(train_cfg.get("loss_uv_div_target_zero", False))
 	region_weighting_enabled = bool(train_cfg.get("region_weighting_enabled", False))
 	region_weight_base = float(train_cfg.get("region_weight_base", 1.0))
 	region_weight_strength = float(train_cfg.get("region_weight_strength", 1.0))
@@ -636,13 +675,25 @@ def run_training(args: argparse.Namespace) -> None:
 		resume_ckpt = torch.load(resume_path, map_location="cpu")
 		if "model_state" not in resume_ckpt:
 			raise KeyError(f"invalid resume checkpoint (missing model_state): {resume_path}")
-		model.load_state_dict(resume_ckpt["model_state"])
+		load_result = model.load_state_dict(resume_ckpt["model_state"], strict=False)
+		if load_result.missing_keys or load_result.unexpected_keys:
+			_log.warning(
+				"resume model_state partially loaded | missing=%d unexpected=%d",
+				len(load_result.missing_keys),
+				len(load_result.unexpected_keys),
+			)
 		opt_state = resume_ckpt.get("optimizer_state")
 		if isinstance(opt_state, dict):
-			optimizer.load_state_dict(opt_state)
+			try:
+				optimizer.load_state_dict(opt_state)
+			except Exception as exc:
+				_log.warning("skip optimizer state restore due to incompatibility: %s", str(exc))
 		scaler_state = resume_ckpt.get("scaler_state")
 		if isinstance(scaler_state, dict):
-			scaler.load_state_dict(scaler_state)
+			try:
+				scaler.load_state_dict(scaler_state)
+			except Exception as exc:
+				_log.warning("skip scaler state restore due to incompatibility: %s", str(exc))
 		best_val = float(resume_ckpt.get("best_val_loss", best_val))
 		best_val_nrmse_percent = float(resume_ckpt.get("best_val_nrmse_percent", best_val_nrmse_percent))
 		selection_key_ckpt = resume_ckpt.get("best_selection_key", None)
@@ -791,12 +842,19 @@ def run_training(args: argparse.Namespace) -> None:
 							pred_transformer = out["pred_transformer"]
 							pred_unet = out["pred_unet"]
 							pred_convlstm = out["pred_convlstm"]
-							loss_main = masked_weighted_mse(
-								pred,
-								y_chunk,
-								y_valid_chunk,
-								channel_weights=channel_weights,
-								spatial_weights=spatial_weights,
+							loss_main, _ = velocity_scalar_composite_loss(
+								pred=pred,
+								target=y_chunk,
+								mask=y_valid_chunk,
+								input_last_frame=cur_x[:, -1],
+								var_to_idx=var_to_idx,
+								lambda_div=lambda_div,
+								lambda_smooth=lambda_smooth,
+								lambda_mag=lambda_mag,
+								lambda_anom=lambda_anom,
+								lambda_adv=lambda_adv,
+								lambda_grad=lambda_grad,
+								div_target_zero=div_target_zero,
 							)
 							loss_aux = masked_weighted_mse(
 								pred_transformer,
@@ -934,6 +992,14 @@ def run_training(args: argparse.Namespace) -> None:
 						loss_gradient_consistency_weight=loss_gradient_consistency_weight,
 						loss_edge_weight=loss_edge_weight,
 						edge_loss_type=edge_loss_type,
+						var_to_idx=var_to_idx,
+						lambda_div=lambda_div,
+						lambda_smooth=lambda_smooth,
+						lambda_mag=lambda_mag,
+						lambda_anom=lambda_anom,
+						lambda_adv=lambda_adv,
+						lambda_grad=lambda_grad,
+						div_target_zero=div_target_zero,
 						input_steps=input_steps,
 					)
 					pred = _rollout_predict_with_overlap(

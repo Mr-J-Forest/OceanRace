@@ -1,9 +1,9 @@
 {
   "task": "element_forecasting",
   "mode": "single_file",
-  "checkpoint": "/OceanRace/outputs/element_forecasting/checkpoints/hybrid_best.pt",
+  "checkpoint": "/root/OceanRace/outputs/element_forecasting/checkpoints/hybrid_best.pt",
   "dataset": {
-    "data_file": "/OceanRace/data/processed/element_forecasting/path.txt",
+    "data_file": "/root/OceanRace/data/processed/element_forecasting/path.txt",
     "split": "test",
     "total_windows": 47758,
     "selected_windows": 2134,
@@ -29,87 +29,87 @@
     "nrmse_percent_max": 15.0
   },
   "metrics": {
-    "mse": 0.17840950370121872,
-    "rmse": 0.4223854918214151,
-    "mae": 0.21229997145314525,
-    "bias": 0.08475999917913886,
-    "nse": 0.9990466585912372,
-    "nrmse_percent": 1.14396296168373
+    "mse": 0.22139556810853692,
+    "rmse": 0.470526904765856,
+    "mae": 0.23373599902285117,
+    "bias": 0.01153007020501632,
+    "nse": 0.9988169600922835,
+    "nrmse_percent": 1.274346212050782
   },
   "segmented_metrics": {
     "first_24h": {
-      "mse": 0.08802269423006463,
-      "rmse": 0.2966861881349798,
-      "mae": 0.14857478648344702,
-      "bias": 0.042885489560797366,
-      "nrmse_percent": 0.8035266765579285
+      "mse": 0.10767549422161012,
+      "rmse": 0.32813944325790845,
+      "mae": 0.1659721983665984,
+      "bias": 0.003060169016564654,
+      "nrmse_percent": 0.8887127437447067
     },
     "last_24h": {
-      "mse": 0.2657104955828149,
-      "rmse": 0.5154711394276259,
-      "mae": 0.2677452427472461,
-      "bias": 0.12376160697794841,
-      "nrmse_percent": 1.396070420835929
+      "mse": 0.33154671453835205,
+      "rmse": 0.5758009330822172,
+      "mae": 0.29286649644593693,
+      "bias": 0.016823274689822913,
+      "nrmse_percent": 1.5594639340204541
     },
     "delta_last_minus_first": {
-      "rmse": 0.21878495129264608,
-      "mae": 0.11917045626379907,
-      "bias": 0.08087611741715105,
-      "nrmse_percent": 0.5925437442780004
+      "rmse": 0.2476614898243088,
+      "mae": 0.12689429807933852,
+      "bias": 0.01376310567325826,
+      "nrmse_percent": 0.6707511902757475
     }
   },
   "per_variable_summary": {
     "rows": [
       {
         "var": "sst",
-        "bias": 0.26935833779318236,
-        "mae": 0.5846518003119797,
-        "rmse": 0.7929186658949995,
-        "nrmse_percent": 2.3710972190775093,
-        "rmse_first_24h": 0.5674474261322918,
-        "rmse_last_24h": 0.9602991306982426,
-        "rmse_growth_last_vs_first": 1.6923138364440538
+        "bias": 0.07844067958939442,
+        "mae": 0.6548666933045745,
+        "rmse": 0.8804934168705169,
+        "nrmse_percent": 2.632975590001056,
+        "rmse_first_24h": 0.6222915019919981,
+        "rmse_last_24h": 1.0709008797097581,
+        "rmse_growth_last_vs_first": 1.7208990903487038
       },
       {
         "var": "sss",
-        "bias": 0.05158992962164847,
-        "mae": 0.15541588995094305,
-        "rmse": 0.26925639108332283,
-        "nrmse_percent": 0.8042784970672092,
-        "rmse_first_24h": 0.15215089362804526,
-        "rmse_last_24h": 0.3527190222436304,
-        "rmse_growth_last_vs_first": 2.3182185384063714
+        "bias": -0.01797760598689143,
+        "mae": 0.1677072036399463,
+        "rmse": 0.31229925307836076,
+        "nrmse_percent": 0.9328490695819672,
+        "rmse_first_24h": 0.18956208297823807,
+        "rmse_last_24h": 0.40375637471029324,
+        "rmse_growth_last_vs_first": 2.1299426993353143
       },
       {
         "var": "ssu",
-        "bias": 0.014558730947504431,
-        "mae": 0.05285590794047821,
-        "rmse": 0.07543157351768451,
-        "nrmse_percent": 2.768130992948307,
-        "rmse_first_24h": 0.058760755190098046,
-        "rmse_last_24h": 0.08515356594901881,
-        "rmse_growth_last_vs_first": 1.4491571061933577
+        "bias": -0.006334815470923906,
+        "mae": 0.05355395199820356,
+        "rmse": 0.07608232081158835,
+        "nrmse_percent": 2.792011626333346,
+        "rmse_first_24h": 0.061364104245596775,
+        "rmse_last_24h": 0.08458155190541013,
+        "rmse_growth_last_vs_first": 1.3783555214444336
       },
       {
         "var": "ssv",
-        "bias": 0.003531714767949726,
-        "mae": 0.05627361202392235,
-        "rmse": 0.08201314356997912,
-        "nrmse_percent": 2.822200264772087,
-        "rmse_first_24h": 0.05907654766919052,
-        "rmse_last_24h": 0.09487547360168203,
-        "rmse_growth_last_vs_first": 1.605975253207988
+        "bias": -0.008008296095625833,
+        "mae": 0.05881313483953585,
+        "rmse": 0.08360996617437255,
+        "nrmse_percent": 2.8771494226844148,
+        "rmse_first_24h": 0.06127124522177169,
+        "rmse_last_24h": 0.09580933016028122,
+        "rmse_growth_last_vs_first": 1.56369157854551
       }
     ],
     "worst_nrmse_var": {
       "var": "ssv",
-      "bias": 0.003531714767949726,
-      "mae": 0.05627361202392235,
-      "rmse": 0.08201314356997912,
-      "nrmse_percent": 2.822200264772087,
-      "rmse_first_24h": 0.05907654766919052,
-      "rmse_last_24h": 0.09487547360168203,
-      "rmse_growth_last_vs_first": 1.605975253207988
+      "bias": -0.008008296095625833,
+      "mae": 0.05881313483953585,
+      "rmse": 0.08360996617437255,
+      "nrmse_percent": 2.8771494226844148,
+      "rmse_first_24h": 0.06127124522177169,
+      "rmse_last_24h": 0.09580933016028122,
+      "rmse_growth_last_vs_first": 1.56369157854551
     }
   },
   "pass": {
@@ -118,32 +118,32 @@
     "overall": true
   },
   "artifacts": {
-    "per_horizon_csv": "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/per_horizon_metrics.csv",
-    "segment_bias_csv": "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/segment_bias_metrics.csv",
-    "per_variable_csv": "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/per_variable_summary.csv",
+    "per_horizon_csv": "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/per_horizon_metrics.csv",
+    "segment_bias_csv": "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/segment_bias_metrics.csv",
+    "per_variable_csv": "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/per_variable_summary.csv",
     "figures": [
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/horizon_metrics.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/competition_threshold_comparison.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_timeseries_spatial_mean.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_last_horizon_map_sst.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_last_horizon_map_sss.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_last_horizon_map_ssu.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_last_horizon_map_ssv.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_timeseries_spatial_mean.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_last_horizon_map_sst.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_last_horizon_map_sss.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_last_horizon_map_ssu.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_last_horizon_map_ssv.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_timeseries_spatial_mean.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_last_horizon_map_sst.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_last_horizon_map_sss.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_last_horizon_map_ssu.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_last_horizon_map_ssv.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_timeseries_spatial_mean.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_last_horizon_map_sst.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_last_horizon_map_sss.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_last_horizon_map_ssu.png",
-      "/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_last_horizon_map_ssv.png"
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/horizon_metrics.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/competition_threshold_comparison.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_timeseries_spatial_mean.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_last_horizon_map_sst.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_last_horizon_map_sss.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_last_horizon_map_ssu.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_01_last_horizon_map_ssv.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_timeseries_spatial_mean.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_last_horizon_map_sst.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_last_horizon_map_sss.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_last_horizon_map_ssu.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_02_last_horizon_map_ssv.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_timeseries_spatial_mean.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_last_horizon_map_sst.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_last_horizon_map_sss.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_last_horizon_map_ssu.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_03_last_horizon_map_ssv.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_timeseries_spatial_mean.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_last_horizon_map_sst.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_last_horizon_map_sss.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_last_horizon_map_ssu.png",
+      "/root/OceanRace/outputs/final_results/element_forecasting/competition_single_file/figures/sample_04_last_horizon_map_ssv.png"
     ]
   },
   "sample_selection": {
