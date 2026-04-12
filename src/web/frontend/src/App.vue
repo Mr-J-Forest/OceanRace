@@ -89,7 +89,7 @@
 
             <!-- Context Info -->
             <transition name="slide-down">
-              <div v-if="datasetInfo" class="p-4 rounded-xl bg-slate-900/60 border border-tech-cyan/20">
+              <div v-if="datasetInfo" class="p-4 rounded-xl bg-slate-900/60 border border-tech-cyan/20 mt-auto">
                 <div class="flex items-center gap-2 mb-3 text-tech-cyan font-mono text-xs border-b border-tech-cyan/20 pb-2">
                   <CheckCircle2 class="w-4 h-4" />
                   <span>DATASET_LINKED</span>
@@ -109,13 +109,6 @@
                 </button>
               </div>
             </transition>
-
-            <div class="mt-auto pt-6 border-t border-slate-800/50">
-              <h2 class="panel-title text-sm"><AlertTriangle class="w-4 h-4 text-amber-500" /> ANOMALY STATUS</h2>
-              <div class="p-4 rounded-lg border border-dashed border-amber-500/20 bg-amber-500/5 text-center">
-                <p class="text-xs text-amber-500/60 font-mono tracking-wide">SYSTEM OFFLINE</p>
-              </div>
-            </div>
           </div>
         </aside>
 
@@ -131,7 +124,40 @@
                 <MapIcon class="w-5 h-5 text-tech-cyan" />
                 <h2 class="font-display text-lg tracking-widest text-white m-0">空间演变展示</h2>
               </div>
-              <div v-if="hasResult" class="flex items-center gap-3">
+              
+              <!-- Compact Playback Controls integrated in Header -->
+              <div v-if="hasResult" class="flex items-center gap-4 flex-1 max-w-lg ml-6">
+                <button 
+                  class="w-7 h-7 shrink-0 rounded flex items-center justify-center transition-all"
+                  :class="isPlaying ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500 hover:text-slate-900' : 'bg-tech-cyan/10 text-tech-cyan border border-tech-cyan/30 hover:bg-tech-cyan hover:text-slate-900'"
+                  @click="togglePlay"
+                  title="播放/暂停"
+                >
+                  <Pause v-if="isPlaying" class="w-3 h-3 fill-current" />
+                  <Play v-else class="w-3 h-3 fill-current ml-0.5" />
+                </button>
+                
+                <select v-model="playbackSpeed" @change="onSpeedChange" class="h-7 px-1 rounded bg-slate-900/60 border border-tech-cyan/20 text-[10px] font-mono text-tech-cyan focus:outline-none cursor-pointer hover:border-tech-cyan/50 transition-colors">
+                  <option :value="0.5">0.5x</option>
+                  <option :value="1.0">1.0x</option>
+                  <option :value="2.0">2.0x</option>
+                </select>
+                
+                <div class="flex-1 flex items-center gap-3">
+                  <span class="text-[10px] font-mono text-slate-500 shrink-0">T+0H</span>
+                  <input
+                    type="range"
+                    v-model.number="currentStep"
+                    min="0"
+                    :max="totalSteps - 1"
+                    @input="onStepSliderInput"
+                    class="tech-slider h-1 flex-1 cursor-pointer"
+                  />
+                  <span class="text-[10px] font-mono text-slate-500 shrink-0">T+{{ totalSteps * STEP_HOURS }}H</span>
+                </div>
+              </div>
+
+              <div v-if="hasResult" class="flex items-center gap-3 ml-4">
                 <div class="px-4 py-1 rounded-full bg-tech-cyan/10 border border-tech-cyan/40 text-tech-cyan font-mono text-sm shadow-[0_0_15px_rgba(6,182,212,0.2)] flex items-center gap-2">
                   <span class="w-2 h-2 rounded-full bg-tech-cyan animate-pulse"></span>
                   T+{{ (currentStep + 1) * STEP_HOURS }}H
@@ -145,36 +171,14 @@
                 <p class="font-mono text-xs tracking-[0.2em] mt-6">等待后端解析数据</p>
               </div>
 
+              <!-- Top-right corner toggle for Streamlines -->
+              <div v-if="hasResult" class="absolute top-2 right-4 z-20 flex items-center gap-2 bg-slate-900/60 border border-tech-cyan/20 px-2 py-1 rounded backdrop-blur-sm transition-opacity hover:bg-slate-900/80 shadow-lg">
+                <input type="checkbox" id="streamline-toggle" v-model="showQuiver" @change="onQuiverToggle" class="w-3 h-3 accent-tech-cyan cursor-pointer" />
+                <label for="streamline-toggle" class="text-[10px] font-mono text-tech-cyan cursor-pointer select-none tracking-wider">洋流流线</label>
+              </div>
+
               <div v-show="hasResult" class="flex-1 w-full h-full min-h-0 relative">
                 <div id="spatial-chart" class="absolute inset-0"></div>
-              </div>
-            </div>
-            
-            <!-- Floating Playback Bar -->
-            <div v-if="hasResult" class="absolute bottom-6 left-1/2 -translate-x-1/2 w-3/5 max-w-xl px-4 py-2.5 rounded-full bg-slate-900/60 backdrop-blur-md border border-tech-cyan/20 shadow-lg flex items-center gap-4 z-20 transition-all duration-300 hover:bg-slate-900/80 hover:border-tech-cyan/40">
-              <button 
-                class="w-10 h-10 shrink-0 rounded-full flex items-center justify-center transition-all"
-                :class="isPlaying ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500 hover:text-slate-900' : 'bg-tech-cyan/10 text-tech-cyan border border-tech-cyan/30 hover:bg-tech-cyan hover:text-slate-900'"
-                @click="togglePlay"
-              >
-                <Pause v-if="isPlaying" class="w-4 h-4 fill-current" />
-                <Play v-else class="w-4 h-4 fill-current ml-1" />
-              </button>
-              
-              <div class="flex-1 flex flex-col gap-1.5 opacity-80 hover:opacity-100 transition-opacity">
-                <div class="flex justify-between text-[10px] font-mono font-medium tracking-wider">
-                  <span class="text-slate-500">当前 (T+0H)</span>
-                  <span class="text-tech-cyan/80">预测帧 {{ currentStep + 1 }}/{{ totalSteps }}</span>
-                  <span class="text-slate-500">未来 (T+{{ totalSteps * STEP_HOURS }}H)</span>
-                </div>
-                <input
-                  type="range"
-                  v-model.number="currentStep"
-                  min="0"
-                  :max="totalSteps - 1"
-                  @input="onStepSliderInput"
-                  class="tech-slider h-1.5"
-                />
               </div>
             </div>
           </div>
@@ -184,7 +188,7 @@
             <div class="px-5 py-3 border-b border-slate-800/80 shrink-0 bg-tech-panel/40 backdrop-blur-sm">
               <div class="flex items-center gap-3">
                 <LineChart class="w-5 h-5 text-tech-cyan" />
-                <h2 class="font-display text-lg tracking-widest text-white m-0">区域变化趋势</h2>
+                <h2 class="font-display text-lg tracking-widest text-white m-0">{{ curveTitle }}</h2>
               </div>
             </div>
 
@@ -519,7 +523,12 @@ const totalSteps = ref(0)
 const currentStep = ref(0)
 
 const isPlaying = ref(false)
+const playbackSpeed = ref(1.0)
 let playInterval = null
+
+const showQuiver = ref(true)
+let currentStepDataCache = null
+
 const colorRangeCache = new Map()
 
 const API_BASE = (
@@ -848,17 +857,33 @@ const loadStepData = async () => {
   if (!sessionId.value) return
   try {
     const res = await axios.get(`${API_BASE}/predict/${sessionId.value}/step/${currentStep.value}`)
-    renderSpatialPlot(res.data)
+    currentStepDataCache = res.data
+    renderSpatialPlot(currentStepDataCache)
     updateVerticalLineOnCurve()
   } catch (err) {
     console.error('数据游标读取失败', err)
   }
 }
 
-const loadCurveData = async () => {
+const onQuiverToggle = () => {
+  if (currentStepDataCache) {
+    renderSpatialPlot(currentStepDataCache)
+  }
+}
+
+const curveTitle = ref('区域变化趋势')
+
+const loadCurveData = async (r = null, c = null) => {
   if (!sessionId.value) return
   try {
-    const res = await axios.get(`${API_BASE}/predict/${sessionId.value}/curve`)
+    let url = `${API_BASE}/predict/${sessionId.value}/curve`
+    if (r !== null && c !== null) {
+      url += `?r=${r}&c=${c}`
+      curveTitle.value = `点 (${r}, ${c}) 变化趋势`
+    } else {
+      curveTitle.value = '区域变化趋势'
+    }
+    const res = await axios.get(url)
     renderCurvePlot(res.data.data)
   } catch (err) {
     console.error('加载长效趋势数据失败', err)
@@ -868,6 +893,13 @@ const loadCurveData = async () => {
 const onStepSliderInput = () => {
   stopPlay()
   loadStepData()
+}
+
+const onSpeedChange = () => {
+  if (isPlaying.value) {
+    stopPlay()
+    togglePlay()
+  }
 }
 
 const togglePlay = () => {
@@ -880,6 +912,7 @@ const togglePlay = () => {
   if (currentStep.value >= totalSteps.value - 1) currentStep.value = 0
   loadStepData()
 
+  const intervalMs = Math.max(100, 1200 / playbackSpeed.value)
   playInterval = setInterval(() => {
     if (currentStep.value >= totalSteps.value - 1) {
       stopPlay()
@@ -887,7 +920,7 @@ const togglePlay = () => {
     }
     currentStep.value += 1
     loadStepData()
-  }, 1200)
+  }, intervalMs)
 }
 
 const stopPlay = () => {
@@ -918,10 +951,6 @@ const getVariableRenderStyle = (varNameRaw) => {
       diverging: false,
       quantileLow: 0.02,
       quantileHigh: 0.98,
-      upsampleScale: 4,
-      smoothPasses: 1,
-      smoothMode: 'normal',
-      validWeightThreshold: 0.55,
       isMask: false
     }
   }
@@ -935,10 +964,6 @@ const getVariableRenderStyle = (varNameRaw) => {
       diverging: false,
       quantileLow: 0.01,
       quantileHigh: 0.99,
-      upsampleScale: 8,
-      smoothPasses: 2,
-      smoothMode: 'strong',
-      validWeightThreshold: 0.3,
       isMask: false
     }
   }
@@ -952,10 +977,6 @@ const getVariableRenderStyle = (varNameRaw) => {
       diverging: false,
       quantileLow: 0.01,
       quantileHigh: 0.99,
-      upsampleScale: 6,
-      smoothPasses: 1,
-      smoothMode: 'normal',
-      validWeightThreshold: 0.45,
       isMask: false
     }
   }
@@ -969,10 +990,6 @@ const getVariableRenderStyle = (varNameRaw) => {
       diverging: true,
       quantileLow: 0.02,
       quantileHigh: 0.98,
-      upsampleScale: 4,
-      smoothPasses: 1,
-      smoothMode: 'normal',
-      validWeightThreshold: 0.55,
       isMask: false
     }
   }
@@ -986,10 +1003,6 @@ const getVariableRenderStyle = (varNameRaw) => {
       diverging: true,
       quantileLow: 0.02,
       quantileHigh: 0.98,
-      upsampleScale: 4,
-      smoothPasses: 1,
-      smoothMode: 'normal',
-      validWeightThreshold: 0.55,
       isMask: false
     }
   }
@@ -1006,8 +1019,6 @@ const getVariableRenderStyle = (varNameRaw) => {
       diverging: false,
       quantileLow: 0,
       quantileHigh: 1,
-      upsampleScale: 1,
-      smoothPasses: 0,
       isMask: true
     }
   }
@@ -1020,10 +1031,6 @@ const getVariableRenderStyle = (varNameRaw) => {
     diverging: false,
     quantileLow: 0.02,
     quantileHigh: 0.98,
-    upsampleScale: 5,
-    smoothPasses: 1,
-    smoothMode: 'normal',
-    validWeightThreshold: 0.55,
     isMask: false
   }
 }
@@ -1053,7 +1060,7 @@ const mergeVectorFieldsSpatial = (items) => {
     })
   )
 
-  return [...mergedBase, { var: 'ssuv', data: speed }]
+  return [...mergedBase, { var: 'ssuv', data: speed, uData: ssu.data, vData: ssv.data }]
 }
 
 const mergeVectorFieldsCurve = (items) => {
@@ -1130,111 +1137,7 @@ const fillInternalMissingPoints = (grid, passes = 2, minNeighbors = 5) => {
   return source
 }
 
-const upsampleGridBilinear = (grid, scale = 5, minValidWeight = 0.55) => {
-  if (!Array.isArray(grid) || grid.length < 2 || !Array.isArray(grid[0]) || grid[0].length < 2 || scale <= 1) {
-    return grid
-  }
 
-  const rows = grid.length
-  const cols = grid[0].length
-  const outRows = (rows - 1) * scale + 1
-  const outCols = (cols - 1) * scale + 1
-  const output = Array.from({ length: outRows }, () => Array(outCols).fill(null))
-
-  for (let r = 0; r < outRows; r++) {
-    const srcR = r / scale
-    const r0 = Math.floor(srcR)
-    const r1 = Math.min(r0 + 1, rows - 1)
-    const fr = srcR - r0
-
-    for (let c = 0; c < outCols; c++) {
-      const srcC = c / scale
-      const c0 = Math.floor(srcC)
-      const c1 = Math.min(c0 + 1, cols - 1)
-      const fc = srcC - c0
-
-      const q00 = grid[r0][c0]
-      const q01 = grid[r0][c1]
-      const q10 = grid[r1][c0]
-      const q11 = grid[r1][c1]
-
-      const w00 = (1 - fr) * (1 - fc)
-      const w01 = (1 - fr) * fc
-      const w10 = fr * (1 - fc)
-      const w11 = fr * fc
-
-      let weightedSum = 0
-      let weightTotal = 0
-      let validWeight = 0
-
-      if (Number.isFinite(q00)) { weightedSum += q00 * w00; weightTotal += w00; validWeight += w00; }
-      if (Number.isFinite(q01)) { weightedSum += q01 * w01; weightTotal += w01; validWeight += w01; }
-      if (Number.isFinite(q10)) { weightedSum += q10 * w10; weightTotal += w10; validWeight += w10; }
-      if (Number.isFinite(q11)) { weightedSum += q11 * w11; weightTotal += w11; validWeight += w11; }
-
-      output[r][c] = validWeight >= minValidWeight && weightTotal > 0 ? weightedSum / weightTotal : null
-    }
-  }
-
-  return output
-}
-
-const smoothGridMasked = (grid, passes = 1, mode = 'normal') => {
-  if (!Array.isArray(grid) || !grid.length || !Array.isArray(grid[0])) return grid
-
-  let source = grid
-  const rows = grid.length
-  const cols = grid[0].length
-  const kernel = mode === 'strong'
-    ? [
-        [1, 4, 6, 4, 1],
-        [4, 16, 24, 16, 4],
-        [6, 24, 36, 24, 6],
-        [4, 16, 24, 16, 4],
-        [1, 4, 6, 4, 1]
-      ]
-    : [
-        [1, 2, 1],
-        [2, 4, 2],
-        [1, 2, 1]
-      ]
-  const radius = Math.floor(kernel.length / 2)
-
-  for (let p = 0; p < passes; p++) {
-    const target = Array.from({ length: rows }, () => Array(cols).fill(null))
-
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (!Number.isFinite(source[r][c])) {
-          target[r][c] = null
-          continue
-        }
-
-        let sum = 0
-        let wsum = 0
-
-        for (let kr = -radius; kr <= radius; kr++) {
-          for (let kc = -radius; kc <= radius; kc++) {
-            const rr = r + kr
-            const cc = c + kc
-            if (rr < 0 || rr >= rows || cc < 0 || cc >= cols) continue
-            const v = source[rr][cc]
-            if (!Number.isFinite(v)) continue
-
-            const w = kernel[kr + radius][kc + radius]
-            sum += v * w
-            wsum += w
-          }
-        }
-
-        target[r][c] = wsum > 0 ? sum / wsum : source[r][c]
-      }
-    }
-    source = target
-  }
-
-  return source
-}
 
 const getAutoColorRange = (grid, style) => {
   if (style?.isMask) return { zauto: false, zmin: 0, zmax: 1 }
@@ -1278,14 +1181,14 @@ const renderSpatialPlot = (stepData) => {
   plotItems.forEach((v, index) => {
     const style = getVariableRenderStyle(v.var)
 
-    const holeFilledGrid = style.isMask ? v.data : fillInternalMissingPoints(v.data, 2, 5)
-    const upsampledGrid = upsampleGridBilinear(holeFilledGrid, style.upsampleScale, style.validWeightThreshold)
-    const smoothedGrid = style.smoothPasses > 0 ? smoothGridMasked(upsampledGrid, style.smoothPasses, style.smoothMode) : upsampledGrid
+    // Removed frontend heavy upsampling/smoothing to improve display speed. 
+    // Plotly's zsmooth: 'best' already handles interpolation natively and much faster.
+    const smoothedGrid = style.isMask ? v.data : fillInternalMissingPoints(v.data, 2, 5)
     const colorRange = getAutoColorRange(smoothedGrid, style)
 
     const blockWidth = 1.0 / N
     const xStart = index * blockWidth
-    const xEnd = xStart + blockWidth * 0.85
+    const xEnd = xStart + blockWidth * 0.88
     const cbX = xEnd + 0.01
     const titleX = (xStart + xEnd) / 2
 
@@ -1298,10 +1201,10 @@ const renderSpatialPlot = (stepData) => {
       hoverongaps: false,
       showscale: true,
       colorbar: {
-        len: 0.65,
+        len: 0.8,
         thickness: 8,
         x: cbX,
-        y: 0.57,
+        y: 0.5,
         tickfont: { color: '#94a3b8', size: 10, family: 'JetBrains Mono, monospace' },
         outlinewidth: 0,
         bgcolor: 'rgba(3,7,18,0.6)',
@@ -1315,10 +1218,133 @@ const renderSpatialPlot = (stepData) => {
       hoverlabel: { bgcolor: '#0f172a', bordercolor: '#06b6d4', font: { color: '#06b6d4', family: 'JetBrains Mono, monospace' } }
     })
 
+    // If it's a vector field, add streamline to show continuous ocean currents
+    if (v.var === 'ssuv' && v.uData && v.vData && showQuiver.value) {
+      const rows = v.uData.length
+      const cols = rows > 0 ? v.uData[0].length : 0
+      
+      const streamX = []
+      const streamY = []
+      
+      // Simple 2D streamline tracing using Euler method
+      const stepSize = 1.0 // tracing step in grid cells
+      const maxSteps = 25  // max length of a streamline
+      const seedSpacing = 8 // grid spacing for starting a new streamline
+      
+      // Helper to bilinear interpolate velocity at a continuous (x, y) coordinate
+      const getVelocity = (x, y) => {
+        const x0 = Math.floor(x), x1 = x0 + 1
+        const y0 = Math.floor(y), y1 = y0 + 1
+        
+        if (y0 < 0 || y1 >= rows || x0 < 0 || x1 >= cols) return null
+        
+        const fx = x - x0, fy = y - y0
+        
+        const u00 = v.uData[y0][x0], u01 = v.uData[y0][x1]
+        const u10 = v.uData[y1][x0], u11 = v.uData[y1][x1]
+        
+        const v00 = v.vData[y0][x0], v01 = v.vData[y0][x1]
+        const v10 = v.vData[y1][x0], v11 = v.vData[y1][x1]
+        
+        if (!Number.isFinite(u00) || !Number.isFinite(u01) || !Number.isFinite(u10) || !Number.isFinite(u11)) return null
+        if (!Number.isFinite(v00) || !Number.isFinite(v01) || !Number.isFinite(v10) || !Number.isFinite(v11)) return null
+        
+        const u = u00*(1-fx)*(1-fy) + u01*fx*(1-fy) + u10*(1-fx)*fy + u11*fx*fy
+        const _v = v00*(1-fx)*(1-fy) + v01*fx*(1-fy) + v10*(1-fx)*fy + v11*fx*fy
+        
+        return { u, v: _v }
+      }
+      
+      // Plant seeds uniformly
+      // 为什么这样选择流线？
+      // 1. 均匀播种 (Uniform Seeding): 通过 seedSpacing=8，在整个海域等间距地撒下虚拟“漂流瓶”。这样可以保证整个流场的结构都能被照顾到，不会因为随机撒点而漏掉某些重要的涡旋特征。
+      // 2. 静水过滤 (Velocity Threshold): 海洋中很多区域（如某些近岸或深海）流速极低，画出它们不仅浪费前端渲染性能，还会导致“噪点”过多。因此如果初始点流速 < 0.02 (约 2cm/s)，则不生成流线，让视线聚焦在真正活跃的洋流上。
+      // 3. 欧拉追踪 (Euler Tracking): 沿着当前点的速度方向前进一小步(stepSize=1.0)，再在新的位置重新计算速度继续前进，最高追踪 25 步，形成一条平滑的流线轨迹。
+      for (let r = seedSpacing/2; r < rows; r += seedSpacing) {
+        for (let c = seedSpacing/2; c < cols; c += seedSpacing) {
+          
+          let cx = c
+          let cy = r
+          
+          // Check if seed is in a valid fluid area
+          const velStart = getVelocity(cx, cy)
+          if (!velStart) continue
+          const speedStart = Math.sqrt(velStart.u*velStart.u + velStart.v*velStart.v)
+          if (speedStart < 0.02) continue // Skip stagnant areas
+          
+          // Trace forward
+          let lastDx = 0
+          let lastDy = 0
+          for (let s = 0; s < maxSteps; s++) {
+            const vel = getVelocity(cx, cy)
+            if (!vel) break
+            
+            const speed = Math.sqrt(vel.u*vel.u + vel.v*vel.v)
+            if (speed < 0.005) break // stopped
+            
+            // Normalize direction to move a consistent step in grid space
+            const dx = (vel.u / speed) * stepSize
+            const dy = -(vel.v / speed) * stepSize // Y is inverted in plot
+            
+            streamX.push(cx, cx + dx)
+            streamY.push(cy, cy + dy)
+            
+            cx += dx
+            cy += dy
+            lastDx = dx
+            lastDy = dy
+          }
+          
+          // 在流线的末端加上一个箭头，明确指示流水的去向
+          if (lastDx !== 0 || lastDy !== 0) {
+            const arrowLen = 2.0
+            const wingLen = arrowLen * 0.5
+            
+            // Math.atan2 此时使用的是屏幕坐标系的方向
+            const angle = Math.atan2(lastDy, lastDx)
+            const angle1 = angle - Math.PI / 6
+            const angle2 = angle + Math.PI / 6
+            
+            const xw1 = cx - wingLen * Math.cos(angle1)
+            const yw1 = cy - wingLen * Math.sin(angle1)
+            
+            const xw2 = cx - wingLen * Math.cos(angle2)
+            const yw2 = cy - wingLen * Math.sin(angle2)
+            
+            // 画翼线 1
+            streamX.push(cx, xw1, null)
+            streamY.push(cy, yw1, null)
+            
+            // 画翼线 2
+            streamX.push(cx, xw2, null)
+            streamY.push(cy, yw2, null)
+          } else {
+            // Insert a break (NaN) between separate streamlines
+            streamX.push(null)
+            streamY.push(null)
+          }
+        }
+      }
+
+      if (streamX.length > 0) {
+        plots.push({
+          x: streamX,
+          y: streamY,
+          mode: 'lines',
+          type: 'scatter',
+          line: { color: 'rgba(255, 255, 255, 0.55)', width: 1.5, shape: 'spline', smoothing: 1.3 },
+          xaxis: `x${index + 1 > 1 ? index + 1 : ''}`,
+          yaxis: `y${index + 1 > 1 ? index + 1 : ''}`,
+          hoverinfo: 'skip',
+          showlegend: false
+        })
+      }
+    }
+
     annotations.push({
       text: `[ ${style.displayName} ] ${style.title}`,
       x: titleX,
-      y: 1.05,
+      y: 1.02,
       xref: 'paper', yref: 'paper',
       xanchor: 'center', yanchor: 'bottom',
       showarrow: false,
@@ -1329,6 +1355,7 @@ const renderSpatialPlot = (stepData) => {
   // Set explicit manual domains to dynamically place all charts in a single row
   const layout = {
     ...getChartLayoutBase(''),
+    margin: { l: 20, r: 10, t: 40, b: 20 },
     annotations
   }
 
@@ -1336,13 +1363,24 @@ const renderSpatialPlot = (stepData) => {
     const ax = i === 0 ? '' : (i + 1)
     const blockWidth = 1.0 / N
     const xStart = i * blockWidth
-    const xEnd = xStart + blockWidth * 0.85
+    const xEnd = xStart + blockWidth * 0.88
 
     layout[`xaxis${ax}`] = { domain: [xStart, xEnd], anchor: `y${ax}`, showticklabels: true, tickfont: { color: '#475569', size: 9 }, gridcolor: 'rgba(30, 41, 59, 0.5)', zeroline: false }
-    layout[`yaxis${ax}`] = { domain: [0.25, 0.90], anchor: `x${ax}`, autorange: 'reversed', showticklabels: true, tickfont: { color: '#475569', size: 9 }, gridcolor: 'rgba(30, 41, 59, 0.5)', zeroline: false }
+    layout[`yaxis${ax}`] = { scaleanchor: `x${ax}`, scaleratio: 1, domain: [0.05, 1.0], anchor: `x${ax}`, autorange: 'reversed', showticklabels: true, tickfont: { color: '#475569', size: 9 }, gridcolor: 'rgba(30, 41, 59, 0.5)', zeroline: false }
   }
 
   Plotly.react(container, plots, layout, { responsive: true, displayModeBar: false })
+
+  // Add click event listener to update curve chart
+  container.on('plotly_click', (data) => {
+    if (data.points && data.points.length > 0) {
+      const pt = data.points[0]
+      // pt.x is column index, pt.y is row index
+      const c = Math.round(pt.x)
+      const r = Math.round(pt.y)
+      loadCurveData(r, c)
+    }
+  })
 }
 
 const renderCurvePlot = (curveData) => {
@@ -1360,9 +1398,8 @@ const renderCurvePlot = (curveData) => {
     const titleX = (index * (1.0 / N)) + (1.0 / N) * 0.5
 
     plots.push({
-      x: hours, y: v.means, type: 'scatter', mode: 'lines+markers',
-      line: { color: style.displayName === 'SSUV' ? '#8b5cf6' : '#06b6d4', width: 2, shape: 'spline' },
-      marker: { color: style.displayName === 'SSUV' ? '#a78bfa' : '#22d3ee', size: 4 },
+      x: hours, y: v.means, type: 'scatter', mode: 'lines',
+      line: { color: style.displayName === 'SSUV' ? '#8b5cf6' : '#06b6d4', width: 2, shape: 'spline', smoothing: 1.3 },
       name: v.var,
       xaxis: `x${index + 1 > 1 ? index + 1 : ''}`, yaxis: `y${index + 1 > 1 ? index + 1 : ''}`,
       showlegend: false, hoverlabel: { bgcolor: '#0f172a', bordercolor: '#06b6d4' }
@@ -1388,8 +1425,23 @@ const renderCurvePlot = (curveData) => {
 
   for (let i = 0; i < plotItems.length; i++) {
     const ax = i === 0 ? '' : (i + 1)
+    
+    // Calculate custom y-axis range to reduce visual volatility
+    const validMeans = plotItems[i].means.filter(v => v !== null && v !== undefined && !isNaN(v))
+    let yMin = 0
+    let yMax = 1
+    if (validMeans.length > 0) {
+      const minVal = Math.min(...validMeans)
+      const maxVal = Math.max(...validMeans)
+      const valRange = maxVal - minVal
+      // Expand the range by 150% (75% on each side) to flatten out the curve
+      const padding = valRange > 0 ? valRange * 0.75 : Math.abs(minVal) * 0.1 || 0.1
+      yMin = minVal - padding
+      yMax = maxVal + padding
+    }
+
     layout[`xaxis${ax}`] = { gridcolor: 'rgba(30, 41, 59, 0.5)', tickfont: { color: '#64748b' } }
-    layout[`yaxis${ax}`] = { gridcolor: 'rgba(30, 41, 59, 0.5)', tickfont: { color: '#64748b' } }
+    layout[`yaxis${ax}`] = { gridcolor: 'rgba(30, 41, 59, 0.5)', tickfont: { color: '#64748b' }, range: [yMin, yMax] }
   }
 
   Plotly.react(container, plots, layout, { responsive: true, displayModeBar: false })

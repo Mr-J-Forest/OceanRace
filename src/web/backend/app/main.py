@@ -213,7 +213,7 @@ def get_prediction_step(session_id: str, step_idx: int):
     return {"step": step_idx, "data": response_data}
 
 @app.get("/api/predict/{session_id}/curve")
-def get_prediction_curve(session_id: str):
+def get_prediction_curve(session_id: str, r: int = None, c: int = None):
     if session_id not in prediction_cache:
         raise HTTPException(status_code=404, detail="Session not found")
         
@@ -225,23 +225,34 @@ def get_prediction_curve(session_id: str):
     num_steps, _, H, W = pred_numpy.shape
     response_data = []
     
+    # Validation for specific point coordinates
+    use_point = False
+    if r is not None and c is not None:
+        if 0 <= r < H and 0 <= c < W:
+            use_point = True
+
     for i in range(min(4, pred_numpy.shape[1])):
         mean_vals = []
         for t in range(num_steps):
             data_slice = pred_numpy[t, i]
-            mask_slice = extract_mask(mask_numpy, t, i, H, W)
-            if mask_slice is not None and mask_slice.shape == (H, W):
-                valid_data = data_slice[mask_slice >= 0.5]
+            
+            if use_point:
+                val = data_slice[r, c]
+                mean_vals.append(float(val) if not np.isnan(val) else None)
             else:
-                valid_data = data_slice[~np.isnan(data_slice)]
-            mean_vals.append(float(np.mean(valid_data)) if len(valid_data) > 0 else None)
+                mask_slice = extract_mask(mask_numpy, t, i, H, W)
+                if mask_slice is not None and mask_slice.shape == (H, W):
+                    valid_data = data_slice[mask_slice >= 0.5]
+                else:
+                    valid_data = data_slice[~np.isnan(data_slice)]
+                mean_vals.append(float(np.mean(valid_data)) if len(valid_data) > 0 else None)
             
         response_data.append({
             "var": var_names[i],
             "means": mean_vals
         })
         
-    return {"data": response_data}
+    return {"data": response_data, "point": {"r": r, "c": c} if use_point else None}
 
 
 @app.post("/api/anomaly/inspect")
