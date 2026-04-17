@@ -50,5 +50,6 @@ npm run build
 
 ## 🔗 依赖后端服务
 本应用需要与 OceanRace Python 后端服务协同工作。
-- 默认 API Base URL：`http://127.0.0.1:8001/api`
+- 默认 API Base URL：`http://127.0.0.1:8000/api`
+- 开发态也可直接请求 `/api`，由 `vite.config.ts` 代理到后端。
 - 请确保已启动位于 `src/web/backend/app/main.py` 的 FastAPI 服务。

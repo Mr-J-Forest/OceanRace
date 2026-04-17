@@ -50,17 +50,35 @@ npm run build
 
 ## ⚙️ 后端服务 (Backend)
 
-（待完整接入）负责粘合 Python 预测模型与前端界面，作为系统的主要数据枢纽。
+FastAPI 后端已接入，负责承接前端请求并串联涡旋、要素与异常模块的数据接口。
 
-### 通信接口规约 (预挂载)
-默认暴露于 `http://localhost:8000/api`。
-前端组件依赖以下核心路由以驱动海洋预报渲染与回放：
+### 运行方式
+
+在项目根目录启动：
+
+```bash
+python -m uvicorn src.web.backend.app.main:app --host 0.0.0.0 --port 8000
+```
+
+### 通信接口
+
+默认暴露于 `http://127.0.0.1:8000/api`，前端开发服务器通过 Vite 代理转发 `/api` 请求。
+
+当前前端主要依赖以下路由：
+
+* `GET /api/default-data-path`
+* `GET /api/eddy/default-paths`
+* `GET /api/eddy/default-data-path`
+* `POST /api/dataset-info`
+* `POST /api/predict`
+* `POST /api/eddy/dataset-info`
+* `POST /api/eddy/predict-day`
+* `POST /api/anomaly/inspect`
 
 * `GET /api/predict/{session_id}/step/{step_idx}`: 获取特定推演时次的 2D 物理空间网格快照 (包含 SST, SSS, SSU, SSV 等通道数据)。
 * `GET /api/predict/{session_id}/curve`: 获取整个时间预测跨度的全域/指定区域长效趋势宏观统计数据。
 
-### 服务启动指南
-*(待补充具体的 FastAPI 启动脚本，请参考后端目录具体 README或主目录规范)*
+其中涡旋链路配套的对象级标签生成、mask 转换、训练与推理结果会继续写入 `outputs/` 与 `data/processed/` 对应目录。
 
 ---
 

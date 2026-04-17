@@ -10,8 +10,17 @@
 |------|------|
 | `01_data_inspect.py` | 只读抽样统计 `data/raw` 下 NetCDF |
 | `02_preprocess.py` | raw → 清洗落盘；可选划分、splits、训练集 norm、回写配置 |
+| `02c_generate_meta4_labels.py` | 生成 META4 涡旋对象级标签 |
+| `02d_meta4_parallel.py` | 并行生成 META4 对象级标签（旧流程封装） |
+| `02e_generate_meta4_objects.py` | 生成 META4 对象文件 |
+| `02f_meta4_objects_parallel.py` | 并行生成 META4 对象文件 |
+| `02g_export_meta4_schema.py` | 导出 META4 对象变量说明/schema |
+| `02h_fix_meta4_mask_background.py` | 将 META4 mask 背景显式修正为 0 |
+| `02h_objects_to_pixel_mask.py` | 将对象级结果转为像素级 mask |
+| `02i_split_eddy_competition.py` | 将单文件涡旋数据按比赛/时间切分 |
+| `02j_objects_to_mask_parallel.py` | 并行将对象级标签转为像素级 mask |
 | `smoke_element_forecast.py` | 合成极少样本 + 1 epoch，验证要素 ConvLSTM 基线链路（`outputs/smoke_element_baseline/`，见 `src/baseline/element_forecasting/README.md`） |
-| `03_train_eddy.py` | 涡旋识别训练入口（**占位**，待接入 `src/eddy_detection/`） |
+| `03_train_eddy.py` | 涡旋识别训练入口（读取 META4 mask 标签，训练 U-Net 并评估） |
 | `04_train_forecast.py` | 要素预报训练入口（支持命令行覆盖参数） |
 | `test_element/run_element_baseline_train.py` | 要素预报基线训练，读取 `configs/baseline/element_forecasting/{model,train}.yaml` |
 | `05_train_anomaly.py` | 风-浪异常训练与评估（主模型/基线可切换，支持阈值策略、labels/events） |
@@ -22,7 +31,7 @@
 | `07_generate_report.py` | 评估报告生成（**占位**） |
 | `08_check_element_forecast_competition.py` | 要素预测比赛门槛检查（支持 12h 滚动到 72h + MSE≤15%），输出 PASS/FAIL JSON |
 
-除 `01`/`02` 外，`04_train_forecast.py`、`05_train_anomaly.py`、`05b_prepare_anomaly_eval_templates.py`、`05c_compare_anomaly_methods.py` 已实现；其余多为预留入口。
+除 `01`/`02` 外，`03_train_eddy.py`、`04_train_forecast.py`、`05_train_anomaly.py`、`05b_prepare_anomaly_eval_templates.py`、`05c_compare_anomaly_methods.py` 已实现；其余多为预留入口。
 
 ---
 
@@ -138,7 +147,7 @@ python scripts/02_preprocess.py --task all --steps all --validate --validate-lim
 | `python scripts/04_train_forecast.py` | 要素预报训练（主模型或 ConvLSTM 基线） |
 | `python -m baseline.element_forecasting.train` | 同上，模块方式（需 `PYTHONPATH=src`） |
 | `python scripts/05_train_anomaly.py --baseline` | 异常检测轻量基线训练（双分支浅层 AE） |
-| `src/baseline/eddy_detection/` | 占位，见目录 `README.md` |
+| `src/baseline/eddy_detection/` | 涡旋基线预留区，见目录 `README.md` |
 
 示例（项目根目录）：
 
@@ -155,4 +164,3 @@ python scripts/04_train_forecast.py --epochs 5 --batch-size 2 --help
 1. `01_data_inspect.py`：了解 raw 数据质量（可选 `--out` 保存 JSON）。
 2. `02_preprocess.py --task all --steps all`：清洗 → 划分 → 标准化参数 → 更新配置。
 3. **训练**：要素预报 `python scripts/04_train_forecast.py`；其它任务用 `src/<任务>/dataset.py` 或 `src/baseline/<任务>/`。
-| `gui_app.py` | Gradio构建的图形化界面，支持要素预测模型的可视化预测与预览（涡旋检测及异常检测预留入口）|

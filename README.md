@@ -76,7 +76,10 @@ OceanRace/
 │   │   └── check_element_forecast_competition.py  # 要素比赛门槛检查（单文件/滚动等）
 │   ├── 01_data_inspect.py     # 数据探查
 │   ├── 02_preprocess.py       # 预处理
-│   ├── 03_train_eddy.py       # 涡旋训练（占位，待接 src/eddy_detection）
+│   ├── 02c_generate_meta4_labels.py      # META4 对象级标签生成
+│   ├── 02h_fix_meta4_mask_background.py  # 将涡旋 mask 背景显式修正为 0
+│   ├── 02j_objects_to_mask_parallel.py   # 对象级标签转像素级 mask
+│   ├── 03_train_eddy.py       # 涡旋 U-Net 训练与评估
 │   ├── 04_train_forecast.py   # 要素预报训练
 │   ├── 05_train_anomaly.py    # 异常检测训练（支持 --baseline）
 │   ├── 06_run_pipeline.py     # 端到端流水线（占位）
@@ -149,7 +152,9 @@ OceanRace/
 
 ### 模块2：中尺度涡旋识别 (`src/eddy_detection/`)
 
-**职责：** 识别涡旋结构，输出边界、中心与旋转方向。
+**职责：** 基于 META4 对象级涡旋标注构建像素级训练标签，训练 U-Net 做涡旋分割与识别，并输出边界、中心与旋转方向。
+
+**当前实现链路：** `02c_generate_meta4_labels.py` 生成 META4 对象级标签 → `02h_fix_meta4_mask_background.py` 将背景显式设为 0 → `02j_objects_to_mask_parallel.py` 生成训练用 mask 标签 → `03_train_eddy.py` 训练/评估 U-Net → `03b_infer_eddy.py`、`03c_visualize_eddy_examples.py`、`03d_eddy_track_stats.py` 做推理、可视化与统计。
 
 **文件：** `dataset.py` · `model.py` · `trainer.py` · `predictor.py` · `evaluator.py`
 

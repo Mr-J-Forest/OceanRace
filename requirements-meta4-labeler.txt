@@ -1,0 +1,15 @@
+# Isolated environment for META4-style labeling with py-eddy-tracker
+# Keep numpy<2 because py-eddy-tracker source imports numpy.float_ (removed in numpy>=2)
+# Keep matplotlib<3.8 due to contour API compatibility with py-eddy-tracker
+
+numpy<2
+numba
+netCDF4
+zarr<3
+opencv-python-headless
+matplotlib<3.8
+pint
+polygon3
+pyyaml
+requests
+scipy
