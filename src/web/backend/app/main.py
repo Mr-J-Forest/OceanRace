@@ -967,18 +967,6 @@ def inspect_anomaly(req: AnomalyInspectRequest):
     else:
         timestamps = cached_timestamps
 
-    raw_ts_len = len(timestamps)
-    timestamp_mode = "dataset"
-    fallback_warning = ""
-
-    if raw_ts_len == 0 and len(labels) > 0:
-        # Fallback for environments without local processed anomaly files.
-        timestamps = [-1] * len(labels)
-        timestamp_mode = "labels_only_fallback"
-        fallback_warning = (
-            "processed anomaly files unavailable; using labels-only fallback without event-time matching"
-        )
-
     n_pair = min(len(labels), len(timestamps))
     if n_pair == 0:
         raise HTTPException(status_code=400, detail="empty split after loading labels/timestamps")
@@ -1029,9 +1017,7 @@ def inspect_anomaly(req: AnomalyInspectRequest):
         "matched_event_count": len(matched_event_names),
         "points": preview,
         "truncated": len(positive_points) > len(preview),
-        "labels_timestamps_aligned": len(split_labels_raw) == raw_ts_len,
-        "timestamp_mode": timestamp_mode,
-        "warning": fallback_warning,
+        "labels_timestamps_aligned": len(split_labels_raw) == len(timestamps),
     }
 
 
