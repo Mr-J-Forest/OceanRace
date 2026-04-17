@@ -4,8 +4,8 @@
 
 | 文件 | 说明 |
 |------|------|
-| `model.yaml` | 结构超参：`d_model`、`nhead`、`periodic_periods` / `periodic_harmonics`、`spatial_downsample` 等 |
-| `train.yaml` | 训练过程：`epochs`、`batch_size`、`rollout_*`、`scheduled_sampling_*`、`split_mode` / `split_years` 等 |
+| `model.yaml` | 结构超参：`d_model`、`nhead`、`periodic_periods` / `periodic_harmonics`、`spatial_downsample`、`moe_*`（UNet+TrajGRU 多专家，残差融合 `moe_residual_beta`）等 |
+| `train.yaml` | 训练过程：`epochs`、`batch_size`、`rollout_*`、`scheduled_sampling_*`、`split_mode` / `split_years`、`loss_aux_unet_weight` / `loss_aux_convlstm_weight` / `loss_focus_vars_weight`，以及速度/标量物理损失权重（`loss_uv_*`、`loss_scalar_*`）等 |
 
 训练入口：`scripts/04_train_forecast.py`（默认加载上述两个文件，可用 CLI 覆盖部分项）。
 

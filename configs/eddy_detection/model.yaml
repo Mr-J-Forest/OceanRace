@@ -1,2 +1,10 @@
-# 涡旋识别主模型超参数（待接入 src/eddy_detection）
-# 示例：backbone、输入通道、输出类别等
+backbone: unet
+input_steps: 1
+step_stride: 1
+in_channels_per_step: 3
+num_classes: 3
+base_channels: 32
+class_names:
+  - background
+  - cyclonic
+  - anticyclonic

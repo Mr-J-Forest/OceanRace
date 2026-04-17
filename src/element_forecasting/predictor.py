@@ -31,9 +31,9 @@ class ElementForecastPredictor:
 			in_channels=in_channels,
 			input_steps=input_steps,
 			output_steps=output_steps,
-			d_model=int(model_cfg.get("d_model", 128)),
-			nhead=int(model_cfg.get("nhead", 4)),
-			num_layers=int(model_cfg.get("num_layers", 6)),
+			d_model=int(model_cfg.get("vit_d_model", model_cfg.get("d_model", 128))),
+			nhead=int(model_cfg.get("vit_nhead", model_cfg.get("nhead", 4))),
+			num_layers=int(model_cfg.get("vit_num_layers", model_cfg.get("num_layers", 6))),
 			block_size=int(model_cfg.get("block_size", 4)),
 			dropout=float(model_cfg.get("dropout", 0.1)),
 			spatial_downsample=int(model_cfg.get("spatial_downsample", 4)),
@@ -47,8 +47,29 @@ class ElementForecastPredictor:
 			refine_head_hidden_ratio=float(model_cfg.get("refine_head_hidden_ratio", 1.0)),
 			refine_head_num_layers=int(model_cfg.get("refine_head_num_layers", 2)),
 			refine_head_residual=bool(model_cfg.get("refine_head_residual", True)),
+			moe_enabled=bool(model_cfg.get("moe_enabled", False)),
+			moe_unet_base_channels=int(model_cfg.get("moe_unet_base_channels", 48)),
+			moe_convlstm_hidden_channels=int(model_cfg.get("moe_convlstm_hidden_channels", 64)),
+			moe_convlstm_kernel_size=int(model_cfg.get("moe_convlstm_kernel_size", 3)),
+			moe_trajgru_hidden_channels=(
+				int(model_cfg["moe_trajgru_hidden_channels"])
+				if model_cfg.get("moe_trajgru_hidden_channels", None) is not None
+				else None
+			),
+			moe_trajgru_kernel_size=(
+				int(model_cfg["moe_trajgru_kernel_size"])
+				if model_cfg.get("moe_trajgru_kernel_size", None) is not None
+				else None
+			),
+			moe_trajgru_num_links=int(model_cfg.get("moe_trajgru_num_links", 9)),
+			moe_trajgru_flow_hidden_channels=int(model_cfg.get("moe_trajgru_flow_hidden_channels", 32)),
+			moe_trajgru_flow_clip=float(model_cfg.get("moe_trajgru_flow_clip", 4.0)),
+			moe_transformer_fusion_alpha=float(model_cfg.get("moe_transformer_fusion_alpha", 0.45)),
+			moe_residual_beta=float(model_cfg.get("moe_residual_beta", 0.3)),
+			moe_focus_channel_indices=model_cfg.get("moe_focus_channel_indices", []),
+			moe_focus_boost=float(model_cfg.get("moe_focus_boost", 0.25)),
 		)
-		self.model.load_state_dict(ckpt["model_state"])
+		self.model.load_state_dict(ckpt["model_state"], strict=False)
 		self.model.to(self.device)
 		self.model.eval()
 		self.var_names = tuple(ckpt.get("var_names", []))

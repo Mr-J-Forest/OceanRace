@@ -1,4 +1,4 @@
-"""要素长期预测模型：Transformer + Block Attn-Res。"""
+"""要素长期预测模型：ViT Transformer + 多专家融合。"""
 from __future__ import annotations
 
 import torch
@@ -139,7 +139,7 @@ class BlockResidualTransformerEncoder(nn.Module):
 
 
 class SpatioTemporalTransformerBranch(nn.Module):
-	"""时空双轨 Transformer：先在每帧内进行空间 Attention，再沿时间轴进行 Temporal Attention。"""
+	"""时空双轨 ViT Transformer：空间 ViT 编码后进行时间 ViT 编码。"""
 
 	def __init__(
 		self,
@@ -209,15 +209,32 @@ class SpatioTemporalTransformerBranch(nn.Module):
 		self.tod_emb = nn.Linear(self.time_feature_dim, d_model)
 
 		num_tem_layers = max(1, num_layers - num_spa_layers)
-		self.temporal_encoder = BlockResidualTransformerEncoder(
-			num_layers=num_tem_layers,
+		tem_layer = nn.TransformerEncoderLayer(
 			d_model=d_model,
 			nhead=nhead,
-			block_size=block_size,
+			dim_feedforward=int(d_model * 4),
 			dropout=dropout,
+			batch_first=True,
+			norm_first=True,
 		)
-
-		self.out_proj = nn.Linear(d_model, output_steps * in_channels * self.patch_size * self.patch_size)
+		self.temporal_encoder = nn.TransformerEncoder(tem_layer, num_layers=num_tem_layers)
+		self.temporal_norm = nn.LayerNorm(d_model)
+		self.shared_head = nn.Sequential(
+			nn.Conv2d(d_model, d_model, kernel_size=3, padding=1),
+			nn.GELU(),
+			nn.Conv2d(d_model, d_model, kernel_size=3, padding=1),
+			nn.GELU(),
+		)
+		self.var_heads = nn.ModuleList(
+			[
+				nn.Sequential(
+					nn.Conv2d(d_model, d_model, kernel_size=3, padding=1),
+					nn.GELU(),
+					nn.Conv2d(d_model, output_steps, kernel_size=1),
+				)
+				for _ in range(in_channels)
+			]
+		)
 		self.refine_head = None
 		if bool(refine_head_enabled):
 			self.refine_head = DepthwiseSeparableRefineHead(
@@ -248,7 +265,6 @@ class SpatioTemporalTransformerBranch(nn.Module):
 			raise ValueError(f"expected x with shape (B,T,C,H,W), got {tuple(x.shape)}")
 		bsz, t_in, ch, h, w = x.shape
 		
-		# 1. Patch Embedding & 空间 Transformer
 		x_reshaped = x.reshape(bsz * t_in, ch, h, w)
 		patches = self.patch_embed(x_reshaped)
 		if self.multi_scale_enabled and self.patch_embed_aux is not None:
@@ -266,7 +282,6 @@ class SpatioTemporalTransformerBranch(nn.Module):
 		spa_tokens = spa_tokens + self.spa_pos_emb[:, :num_spatial_tokens, :]
 		spa_out = self.spatial_encoder(spa_tokens)
 
-		# 2. 时空转换与时间 Transformer (B, Grid, T_in, D)
 		tem_tokens = spa_out.view(bsz, t_in, num_spatial_tokens, d).permute(0, 2, 1, 3)
 		
 		device = x.device
@@ -278,15 +293,15 @@ class SpatioTemporalTransformerBranch(nn.Module):
 		
 		tem_tokens = tem_tokens + self.tem_pos_emb[:, :t_in, :].unsqueeze(1) + tod_embeds.unsqueeze(1)
 		tem_in = tem_tokens.reshape(bsz * num_spatial_tokens, t_in, d)
-		tem_out = self.temporal_encoder(tem_in) 
-		
-		# 3. 解码头
+		tem_out = self.temporal_encoder(tem_in)
+		tem_out = self.temporal_norm(tem_out)
 		tail = tem_out[:, -1, :]
-		pred_flat = self.out_proj(tail)
-		
-		pred = pred_flat.view(bsz, h_r, w_r, self.output_steps, ch, self.patch_size, self.patch_size)
-		pred = pred.permute(0, 3, 4, 1, 5, 2, 6).contiguous()
-		pred = pred.reshape(bsz, self.output_steps, ch, h_r * self.patch_size, w_r * self.patch_size)
+		tail_map = tail.view(bsz, h_r, w_r, d).permute(0, 3, 1, 2).contiguous()
+		if tail_map.shape[-2:] != (h, w):
+			tail_map = F.interpolate(tail_map, size=(h, w), mode="bilinear", align_corners=False)
+		shared = self.shared_head(tail_map)
+		pred_channels = [head(shared) for head in self.var_heads]
+		pred = torch.stack(pred_channels, dim=2)
 		
 		if pred.shape[-2:] != (h, w):
 			pred = F.interpolate(pred.flatten(0,1), size=(h, w), mode="bilinear", align_corners=False)
@@ -300,8 +315,181 @@ class SpatioTemporalTransformerBranch(nn.Module):
 		return pred
 
 
+class _DoubleConv(nn.Module):
+	"""UNet基础卷积块。"""
+
+	def __init__(self, in_channels: int, out_channels: int) -> None:
+		super().__init__()
+		self.net = nn.Sequential(
+			nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+			nn.BatchNorm2d(out_channels),
+			nn.GELU(),
+			nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+			nn.BatchNorm2d(out_channels),
+			nn.GELU(),
+		)
+
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
+		return self.net(x)
+
+
+class UNetExpert(nn.Module):
+	"""将输入时间窗展平到通道维度的轻量UNet专家。"""
+
+	def __init__(
+		self,
+		in_channels: int,
+		input_steps: int,
+		output_steps: int,
+		base_channels: int = 48,
+	) -> None:
+		super().__init__()
+		flat_in = int(in_channels * input_steps)
+		self.output_steps = int(output_steps)
+		self.in_channels = int(in_channels)
+
+		c1 = max(16, int(base_channels))
+		c2 = c1 * 2
+		c3 = c2 * 2
+
+		self.enc1 = _DoubleConv(flat_in, c1)
+		self.enc2 = _DoubleConv(c1, c2)
+		self.enc3 = _DoubleConv(c2, c3)
+		self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+		self.up2 = nn.ConvTranspose2d(c3, c2, kernel_size=2, stride=2)
+		self.dec2 = _DoubleConv(c2 + c2, c2)
+		self.up1 = nn.ConvTranspose2d(c2, c1, kernel_size=2, stride=2)
+		self.dec1 = _DoubleConv(c1 + c1, c1)
+		self.head = nn.Conv2d(c1, output_steps * in_channels, kernel_size=1)
+
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
+		bsz, t_in, ch, h, w = x.shape
+		x2d = x.reshape(bsz, t_in * ch, h, w)
+
+		e1 = self.enc1(x2d)
+		e2 = self.enc2(self.pool(e1))
+		e3 = self.enc3(self.pool(e2))
+
+		d2 = self.up2(e3)
+		if d2.shape[-2:] != e2.shape[-2:]:
+			d2 = F.interpolate(d2, size=e2.shape[-2:], mode="bilinear", align_corners=False)
+		d2 = self.dec2(torch.cat([d2, e2], dim=1))
+
+		d1 = self.up1(d2)
+		if d1.shape[-2:] != e1.shape[-2:]:
+			d1 = F.interpolate(d1, size=e1.shape[-2:], mode="bilinear", align_corners=False)
+		d1 = self.dec1(torch.cat([d1, e1], dim=1))
+
+		out = self.head(d1)
+		return out.view(bsz, self.output_steps, self.in_channels, h, w)
+
+
+class TrajGRUCell(nn.Module):
+	"""Trajectory GRU 单元。"""
+
+	def __init__(
+		self,
+		input_channels: int,
+		hidden_channels: int,
+		kernel_size: int = 3,
+		num_links: int = 9,
+		flow_hidden_channels: int = 32,
+		flow_clip: float = 4.0,
+	) -> None:
+		super().__init__()
+		padding = kernel_size // 2
+		self.hidden_channels = int(hidden_channels)
+		self.num_links = max(1, int(num_links))
+		self.flow_clip = float(max(0.0, flow_clip))
+		flow_mid = max(8, int(flow_hidden_channels))
+		self.flow_generator = nn.Sequential(
+			nn.Conv2d(input_channels + hidden_channels, flow_mid, kernel_size=3, padding=1),
+			nn.GELU(),
+			nn.Conv2d(flow_mid, 2 * self.num_links, kernel_size=3, padding=1),
+		)
+		self.conv_zr = nn.Conv2d(
+			input_channels + hidden_channels,
+			2 * hidden_channels,
+			kernel_size=kernel_size,
+			padding=padding,
+		)
+		self.conv_xn = nn.Conv2d(input_channels, hidden_channels, kernel_size=kernel_size, padding=padding)
+		self.conv_hn = nn.Conv2d(hidden_channels, hidden_channels, kernel_size=kernel_size, padding=padding)
+
+	def _warp(self, h: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
+		bsz, _, hgt, wid = h.shape
+		yy = torch.linspace(-1.0, 1.0, steps=hgt, device=h.device, dtype=h.dtype)
+		xx = torch.linspace(-1.0, 1.0, steps=wid, device=h.device, dtype=h.dtype)
+		grid_y, grid_x = torch.meshgrid(yy, xx, indexing="ij")
+		base_grid = torch.stack((grid_x, grid_y), dim=-1).unsqueeze(0).expand(bsz, hgt, wid, 2)
+		norm_x = flow[:, 0] * (2.0 / max(1, wid - 1))
+		norm_y = flow[:, 1] * (2.0 / max(1, hgt - 1))
+		flow_grid = torch.stack((norm_x, norm_y), dim=-1)
+		sample_grid = base_grid + flow_grid
+		return F.grid_sample(h, sample_grid, mode="bilinear", padding_mode="border", align_corners=True)
+
+	def forward(
+		self,
+		x: torch.Tensor,
+		h_prev: torch.Tensor,
+	) -> torch.Tensor:
+		flow_raw = self.flow_generator(torch.cat([x, h_prev], dim=1))
+		flows = flow_raw.view(flow_raw.shape[0], self.num_links, 2, flow_raw.shape[-2], flow_raw.shape[-1])
+		if self.flow_clip > 0.0:
+			flows = torch.tanh(flows) * self.flow_clip
+		warped_states: list[torch.Tensor] = []
+		for i in range(self.num_links):
+			warped_states.append(self._warp(h_prev, flows[:, i]))
+		h_agg = torch.stack(warped_states, dim=0).mean(dim=0)
+		zr = torch.sigmoid(self.conv_zr(torch.cat([x, h_agg], dim=1)))
+		z, r = torch.chunk(zr, 2, dim=1)
+		n = torch.tanh(self.conv_xn(x) + self.conv_hn(r * h_agg))
+		return (1.0 - z) * n + z * h_prev
+
+
+class TrajGRUExpert(nn.Module):
+	"""以 TrajGRU 编码输入序列，再解码为多步输出的专家分支。"""
+
+	def __init__(
+		self,
+		in_channels: int,
+		output_steps: int,
+		hidden_channels: int = 64,
+		kernel_size: int = 3,
+		num_links: int = 9,
+		flow_hidden_channels: int = 32,
+		flow_clip: float = 4.0,
+	) -> None:
+		super().__init__()
+		self.in_channels = int(in_channels)
+		self.output_steps = int(output_steps)
+		hid = max(16, int(hidden_channels))
+		self.cell = TrajGRUCell(
+			input_channels=in_channels,
+			hidden_channels=hid,
+			kernel_size=kernel_size,
+			num_links=num_links,
+			flow_hidden_channels=flow_hidden_channels,
+			flow_clip=flow_clip,
+		)
+		self.head = nn.Sequential(
+			nn.Conv2d(hid, hid, kernel_size=3, padding=1),
+			nn.GELU(),
+			nn.Conv2d(hid, output_steps * in_channels, kernel_size=1),
+		)
+
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
+		bsz, _, _, h, w = x.shape
+		h_t = x.new_zeros((bsz, self.cell.hidden_channels, h, w))
+		for t in range(x.shape[1]):
+			h_t = self.cell(x[:, t], h_t)
+		out = self.head(h_t)
+		return out.view(bsz, self.output_steps, self.in_channels, h, w)
+
+
 class HybridElementForecastModel(nn.Module):
-	"""长时序预测主模型（仅 Transformer 分支）。"""
+	"""长时序预测主模型（Transformer + UNet/TrajGRU 多专家）。"""
 
 	def __init__(
 		self,
@@ -324,9 +512,23 @@ class HybridElementForecastModel(nn.Module):
 		refine_head_hidden_ratio: float = 1.0,
 		refine_head_num_layers: int = 2,
 		refine_head_residual: bool = True,
+		moe_enabled: bool = False,
+		moe_unet_base_channels: int = 48,
+		moe_convlstm_hidden_channels: int = 64,
+		moe_convlstm_kernel_size: int = 3,
+		moe_trajgru_hidden_channels: int | None = None,
+		moe_trajgru_kernel_size: int | None = None,
+		moe_trajgru_num_links: int = 9,
+		moe_trajgru_flow_hidden_channels: int = 32,
+		moe_trajgru_flow_clip: float = 4.0,
+		moe_transformer_fusion_alpha: float = 0.45,
+		moe_residual_beta: float = 0.3,
+		moe_focus_channel_indices: tuple[int, ...] | list[int] | None = None,
+		moe_focus_boost: float = 0.25,
 	) -> None:
 		super().__init__()
 		self.output_steps = output_steps
+		self.in_channels = in_channels
 		self.transformer = SpatioTemporalTransformerBranch(
 			in_channels=in_channels,
 			input_steps=input_steps,
@@ -348,11 +550,77 @@ class HybridElementForecastModel(nn.Module):
 			refine_head_num_layers=refine_head_num_layers,
 			refine_head_residual=refine_head_residual,
 		)
+		self.moe_enabled = bool(moe_enabled)
+		self.moe_transformer_fusion_alpha = float(max(0.0, min(1.0, moe_transformer_fusion_alpha)))
+		self.moe_residual_beta = float(moe_residual_beta)
+		self.moe_focus_boost = float(max(0.0, moe_focus_boost))
+		focus_indices = [
+			int(i)
+			for i in (moe_focus_channel_indices or [])
+			if 0 <= int(i) < int(in_channels)
+		]
+		self.moe_focus_channel_indices = tuple(sorted(set(focus_indices)))
+
+		self.unet_expert = None
+		self.convlstm_expert = None
+		self.gate_mlp = None
+		if self.moe_enabled:
+			self.unet_expert = UNetExpert(
+				in_channels=in_channels,
+				input_steps=input_steps,
+				output_steps=output_steps,
+				base_channels=moe_unet_base_channels,
+			)
+			traj_hidden_channels = int(
+				moe_trajgru_hidden_channels
+				if moe_trajgru_hidden_channels is not None
+				else moe_convlstm_hidden_channels
+			)
+			traj_kernel_size = int(
+				moe_trajgru_kernel_size
+				if moe_trajgru_kernel_size is not None
+				else moe_convlstm_kernel_size
+			)
+			self.convlstm_expert = TrajGRUExpert(
+				in_channels=in_channels,
+				output_steps=output_steps,
+				hidden_channels=traj_hidden_channels,
+				kernel_size=traj_kernel_size,
+				num_links=moe_trajgru_num_links,
+				flow_hidden_channels=moe_trajgru_flow_hidden_channels,
+				flow_clip=moe_trajgru_flow_clip,
+			)
+			self.gate_mlp = nn.Sequential(
+				nn.Linear(in_channels, max(16, in_channels * 2)),
+				nn.GELU(),
+				nn.Linear(max(16, in_channels * 2), 2),
+			)
 
 	def forward(self, x: torch.Tensor, t0: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
 		pred_transformer = self.transformer(x, t0=t0)
-		pred = pred_transformer
+		pred_unet = pred_transformer
+		pred_convlstm = pred_transformer
+		gate_weights = pred_transformer.new_zeros((pred_transformer.shape[0], 2))
+		if self.moe_enabled and self.unet_expert is not None and self.convlstm_expert is not None and self.gate_mlp is not None:
+			pred_unet = self.unet_expert(x)
+			pred_convlstm = self.convlstm_expert(x)
+			gate_feat = x[:, -1].mean(dim=(-2, -1))
+			gate_logits = self.gate_mlp(gate_feat)
+			gate_weights = torch.softmax(gate_logits, dim=-1)
+			w_unet = gate_weights[:, 0].view(-1, 1, 1, 1, 1)
+			w_convlstm = gate_weights[:, 1].view(-1, 1, 1, 1, 1)
+			pred_experts = (w_unet * pred_unet) + (w_convlstm * pred_convlstm)
+			pred = pred_transformer + (self.moe_residual_beta * pred_experts)
+			if self.moe_focus_channel_indices and self.moe_focus_boost > 0.0:
+				idx = list(self.moe_focus_channel_indices)
+				delta_focus = (pred_experts - pred_transformer)[:, :, idx]
+				pred[:, :, idx] = pred[:, :, idx] + self.moe_focus_boost * delta_focus
+		else:
+			pred = pred_transformer
 		return {
 			"pred": pred,
 			"pred_transformer": pred_transformer,
+			"pred_unet": pred_unet,
+			"pred_convlstm": pred_convlstm,
+			"moe_gate_weights": gate_weights,
 		}

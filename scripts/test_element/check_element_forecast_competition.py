@@ -19,6 +19,7 @@ import argparse
 import csv
 import json
 import math
+import random
 import sys
 from pathlib import Path
 from typing import Any
@@ -335,11 +336,90 @@ def _plot_sample_map(
     plt.close(fig)
 
 
+def _update_minmax_per_channel(
+    current_min: torch.Tensor,
+    current_max: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    valid = mask > 0
+    masked_min = torch.where(valid, target, torch.full_like(target, float("inf")))
+    masked_max = torch.where(valid, target, torch.full_like(target, float("-inf")))
+    batch_min = torch.amin(masked_min, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
+    batch_max = torch.amax(masked_max, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
+    has_valid = torch.any(valid, dim=(0, 1, 3, 4))
+    new_min = torch.where(has_valid, torch.minimum(current_min, batch_min), current_min)
+    new_max = torch.where(has_valid, torch.maximum(current_max, batch_max), current_max)
+    return new_min, new_max
+
+
+def _safe_metrics_from_sums(
+    *,
+    ss_res: float,
+    abs_err: float,
+    sum_err: float,
+    mask_sum: float,
+    target_min: float,
+    target_max: float,
+    eps: float,
+) -> dict[str, float]:
+    mse = ss_res / max(mask_sum, eps)
+    rmse = math.sqrt(max(mse, 0.0))
+    mae = abs_err / max(mask_sum, eps)
+    bias = sum_err / max(mask_sum, eps)
+    target_range = max(target_max - target_min, eps)
+    nrmse_pct = (rmse / target_range) * 100.0
+    return {
+        "mse": float(mse),
+        "rmse": float(rmse),
+        "mae": float(mae),
+        "bias": float(bias),
+        "nrmse_percent": float(nrmse_pct),
+    }
+
+
+def _sample_last_step_rmse(diff: torch.Tensor, mask: torch.Tensor, eps: float) -> torch.Tensor:
+    diff_last = diff[:, -1]
+    mask_last = mask[:, -1]
+    num = torch.sum((diff_last ** 2) * mask_last, dim=(1, 2, 3))
+    den = torch.sum(mask_last, dim=(1, 2, 3)).clamp_min(eps)
+    return torch.sqrt(num / den + eps)
+
+
+def _write_segment_bias_csv(path: Path, rows: list[dict[str, float | str]]) -> None:
+    fields = ["scope", "mse", "rmse", "mae", "bias", "nrmse_percent"]
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: row.get(k) for k in fields})
+
+
+def _write_per_variable_csv(path: Path, rows: list[dict[str, float | str]]) -> None:
+    fields = [
+        "var",
+        "bias",
+        "mae",
+        "rmse",
+        "nrmse_percent",
+        "rmse_first_24h",
+        "rmse_last_24h",
+        "rmse_growth_last_vs_first",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: row.get(k) for k in fields})
+
+
 def _write_markdown_summary(
     path: Path,
     report: dict[str, Any],
     figure_files: list[str],
     per_horizon_csv: str,
+    segment_bias_csv: str,
+    per_variable_csv: str,
 ) -> None:
     lines: list[str] = []
     lines.append("# Element Forecast Competition Check (Single File)")
@@ -358,10 +438,43 @@ def _write_markdown_summary(
     lines.append(f"- MAE: {report['metrics']['mae']:.6f}")
     lines.append(f"- NSE: {report['metrics']['nse']:.6f}")
     lines.append(f"- NRMSE(%): {report['metrics']['nrmse_percent']:.6f}")
+    seg = report.get("segmented_metrics", {})
+    first_seg = seg.get("first_24h", {})
+    last_seg = seg.get("last_24h", {})
+    delta_seg = seg.get("delta_last_minus_first", {})
+    if first_seg and last_seg:
+        lines.append("")
+        lines.append("## Segmented Robustness")
+        lines.append("")
+        lines.append(
+            f"- First 24h RMSE/NRMSE/Bias: {float(first_seg.get('rmse', float('nan'))):.6f} / "
+            f"{float(first_seg.get('nrmse_percent', float('nan'))):.6f}% / {float(first_seg.get('bias', float('nan'))):.6f}"
+        )
+        lines.append(
+            f"- Last 24h RMSE/NRMSE/Bias: {float(last_seg.get('rmse', float('nan'))):.6f} / "
+            f"{float(last_seg.get('nrmse_percent', float('nan'))):.6f}% / {float(last_seg.get('bias', float('nan'))):.6f}"
+        )
+        lines.append(
+            f"- Last-First Delta (RMSE/NRMSE/Bias): {float(delta_seg.get('rmse', float('nan'))):+.6f} / "
+            f"{float(delta_seg.get('nrmse_percent', float('nan'))):+.6f}% / {float(delta_seg.get('bias', float('nan'))):+.6f}"
+        )
+
+    top_var = report.get("per_variable_summary", {}).get("worst_nrmse_var", None)
+    if isinstance(top_var, dict) and top_var:
+        lines.append("")
+        lines.append("## Variable Risk")
+        lines.append("")
+        lines.append(
+            f"- Worst variable by NRMSE: {top_var.get('var', 'unknown')} "
+            f"(NRMSE={float(top_var.get('nrmse_percent', float('nan'))):.6f}%, "
+            f"Bias={float(top_var.get('bias', float('nan'))):.6f})"
+        )
     lines.append("")
     lines.append("## Files")
     lines.append("")
     lines.append(f"- Per-horizon metrics CSV: {per_horizon_csv}")
+    lines.append(f"- Segment bias CSV: {segment_bias_csv}")
+    lines.append(f"- Per-variable summary CSV: {per_variable_csv}")
     for f in figure_files:
         lines.append(f"- Figure: {f}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -396,6 +509,16 @@ def main() -> None:
     )
     ap.add_argument("--max-batches", type=int, default=0, help="仅评估前 N 个 batch；0 表示全部")
     ap.add_argument("--max-plot-vars", type=int, default=4)
+    ap.add_argument("--plot-samples", type=int, default=4, help="可视化样本数量")
+    ap.add_argument(
+        "--sample-selection",
+        type=str,
+        default="mixed",
+        choices=["mixed", "hard", "random"],
+        help="样本选择策略：hard=高误差，random=随机，mixed=混合",
+    )
+    ap.add_argument("--hard-sample-ratio", type=float, default=0.5, help="mixed 模式下高误差样本占比")
+    ap.add_argument("--sample-seed", type=int, default=42, help="随机采样种子")
     ap.add_argument(
         "--output-dir",
         type=Path,
@@ -538,15 +661,44 @@ def main() -> None:
     _log.info("=" * 60)
 
     eps = 1e-12
+    random.seed(int(args.sample_seed))
     compute_device = predictor.device
     total_samples = 0
     ss_res_total = 0.0
     abs_err_total = 0.0
+    sum_err_total = 0.0
     mask_total = 0.0
     target_sum_total = 0.0
     target_sq_total = 0.0
     target_min_total = float("inf")
     target_max_total = float("-inf")
+
+    first_steps = min(24, eval_steps)
+    last_start = max(0, eval_steps - 24)
+    ss_res_first = 0.0
+    abs_err_first = 0.0
+    sum_err_first = 0.0
+    mask_first_total = 0.0
+    target_min_first = float("inf")
+    target_max_first = float("-inf")
+    ss_res_last = 0.0
+    abs_err_last = 0.0
+    sum_err_last = 0.0
+    mask_last_total = 0.0
+    target_min_last = float("inf")
+    target_max_last = float("-inf")
+
+    n_vars = len(var_names)
+    var_ss_res = torch.zeros(n_vars, dtype=torch.float64, device=compute_device)
+    var_abs_err = torch.zeros(n_vars, dtype=torch.float64, device=compute_device)
+    var_sum_err = torch.zeros(n_vars, dtype=torch.float64, device=compute_device)
+    var_mask = torch.zeros(n_vars, dtype=torch.float64, device=compute_device)
+    var_min = torch.full((n_vars,), float("inf"), dtype=torch.float64, device=compute_device)
+    var_max = torch.full((n_vars,), float("-inf"), dtype=torch.float64, device=compute_device)
+    var_ss_res_first = torch.zeros(n_vars, dtype=torch.float64, device=compute_device)
+    var_mask_first = torch.zeros(n_vars, dtype=torch.float64, device=compute_device)
+    var_ss_res_last = torch.zeros(n_vars, dtype=torch.float64, device=compute_device)
+    var_mask_last = torch.zeros(n_vars, dtype=torch.float64, device=compute_device)
 
     ss_res_h = torch.zeros(eval_steps, dtype=torch.float64, device=compute_device)
     abs_err_h = torch.zeros(eval_steps, dtype=torch.float64, device=compute_device)
@@ -554,9 +706,10 @@ def main() -> None:
     target_min_h = torch.full((eval_steps,), float("inf"), dtype=torch.float64, device=compute_device)
     target_max_h = torch.full((eval_steps,), float("-inf"), dtype=torch.float64, device=compute_device)
 
-    sample_pred: torch.Tensor | None = None
-    sample_target: torch.Tensor | None = None
-    sample_mask: torch.Tensor | None = None
+    hard_candidates: list[dict[str, Any]] = []
+    random_samples: list[dict[str, Any]] = []
+    seen_windows = 0
+    sample_pool_cap = max(1, int(args.plot_samples))
 
     with tqdm_logging():
         pbar = tqdm(loader, desc="Comp-Check", ncols=100)
@@ -582,9 +735,44 @@ def main() -> None:
 
             ss_res_total += float(torch.sum(diff2 * mask).item())
             abs_err_total += float(torch.sum(absdiff * mask).item())
+            sum_err_total += float(torch.sum(diff * mask).item())
             mask_total += float(torch.sum(mask).item())
             target_sum_total += float(torch.sum(target * mask).item())
             target_sq_total += float(torch.sum(target.pow(2) * mask).item())
+
+            var_ss_res += torch.sum(diff2 * mask, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
+            var_abs_err += torch.sum(absdiff * mask, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
+            var_sum_err += torch.sum(diff * mask, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
+            var_mask += torch.sum(mask, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
+            var_min, var_max = _update_minmax_per_channel(var_min, var_max, target=target, mask=mask)
+
+            diff_first = diff[:, :first_steps]
+            mask_first = mask[:, :first_steps]
+            target_first = target[:, :first_steps]
+            ss_res_first += float(torch.sum((diff_first ** 2) * mask_first).item())
+            abs_err_first += float(torch.sum(torch.abs(diff_first) * mask_first).item())
+            sum_err_first += float(torch.sum(diff_first * mask_first).item())
+            mask_first_total += float(torch.sum(mask_first).item())
+            if torch.any(mask_first > 0):
+                target_first_valid = target_first[mask_first > 0]
+                target_min_first = min(target_min_first, float(torch.min(target_first_valid).item()))
+                target_max_first = max(target_max_first, float(torch.max(target_first_valid).item()))
+            var_ss_res_first += torch.sum((diff_first ** 2) * mask_first, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
+            var_mask_first += torch.sum(mask_first, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
+
+            diff_last = diff[:, last_start:eval_steps]
+            mask_last = mask[:, last_start:eval_steps]
+            target_last = target[:, last_start:eval_steps]
+            ss_res_last += float(torch.sum((diff_last ** 2) * mask_last).item())
+            abs_err_last += float(torch.sum(torch.abs(diff_last) * mask_last).item())
+            sum_err_last += float(torch.sum(diff_last * mask_last).item())
+            mask_last_total += float(torch.sum(mask_last).item())
+            if torch.any(mask_last > 0):
+                target_last_valid = target_last[mask_last > 0]
+                target_min_last = min(target_min_last, float(torch.min(target_last_valid).item()))
+                target_max_last = max(target_max_last, float(torch.max(target_last_valid).item()))
+            var_ss_res_last += torch.sum((diff_last ** 2) * mask_last, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
+            var_mask_last += torch.sum(mask_last, dim=(0, 1, 3, 4)).to(dtype=torch.float64)
 
             valid = mask > 0
             if torch.any(valid):
@@ -606,10 +794,28 @@ def main() -> None:
 
             total_samples += int(x.shape[0])
 
-            if sample_pred is None and int(x.shape[0]) > 0:
-                sample_pred = pred[0].detach().cpu()
-                sample_target = target[0].detach().cpu()
-                sample_mask = mask[0].detach().cpu()
+            per_sample_last_rmse = _sample_last_step_rmse(diff, mask, eps=eps)
+            for si in range(int(x.shape[0])):
+                sample_item = {
+                    "sample_id": int(seen_windows),
+                    "score": float(per_sample_last_rmse[si].item()),
+                    "pred": pred[si].detach().cpu(),
+                    "target": target[si].detach().cpu(),
+                    "mask": mask[si].detach().cpu(),
+                }
+                seen_windows += 1
+
+                hard_candidates.append(sample_item)
+                hard_candidates.sort(key=lambda item: float(item["score"]), reverse=True)
+                if len(hard_candidates) > sample_pool_cap:
+                    hard_candidates = hard_candidates[:sample_pool_cap]
+
+                if len(random_samples) < sample_pool_cap:
+                    random_samples.append(sample_item)
+                else:
+                    j = random.randint(0, seen_windows - 1)
+                    if j < sample_pool_cap:
+                        random_samples[j] = sample_item
 
             if args.max_batches > 0 and bi >= args.max_batches:
                 _log.warning("stop early by --max-batches=%d", args.max_batches)
@@ -621,11 +827,71 @@ def main() -> None:
     mse = ss_res_total / max(mask_total, eps)
     rmse = math.sqrt(max(mse, 0.0))
     mae = abs_err_total / max(mask_total, eps)
+    bias = sum_err_total / max(mask_total, eps)
 
     ss_tot = target_sq_total - (target_sum_total * target_sum_total) / max(mask_total, eps)
     nse = 1.0 - (ss_res_total / max(ss_tot, eps))
     target_range = max(target_max_total - target_min_total, eps)
     nrmse_pct = (rmse / target_range) * 100.0
+
+    first_24h_metrics = _safe_metrics_from_sums(
+        ss_res=ss_res_first,
+        abs_err=abs_err_first,
+        sum_err=sum_err_first,
+        mask_sum=mask_first_total,
+        target_min=target_min_first,
+        target_max=target_max_first,
+        eps=eps,
+    )
+    last_24h_metrics = _safe_metrics_from_sums(
+        ss_res=ss_res_last,
+        abs_err=abs_err_last,
+        sum_err=sum_err_last,
+        mask_sum=mask_last_total,
+        target_min=target_min_last,
+        target_max=target_max_last,
+        eps=eps,
+    )
+
+    var_rows: list[dict[str, float | str]] = []
+    worst_var: dict[str, float | str] | None = None
+    for c, vname in enumerate(var_names):
+        den = float(var_mask[c].item())
+        if den <= eps:
+            row = {
+                "var": str(vname),
+                "bias": float("nan"),
+                "mae": float("nan"),
+                "rmse": float("nan"),
+                "nrmse_percent": float("nan"),
+                "rmse_first_24h": float("nan"),
+                "rmse_last_24h": float("nan"),
+                "rmse_growth_last_vs_first": float("nan"),
+            }
+            var_rows.append(row)
+            continue
+        mse_v = float(var_ss_res[c].item() / den)
+        rmse_v = float(math.sqrt(max(mse_v, 0.0)))
+        mae_v = float(var_abs_err[c].item() / den)
+        bias_v = float(var_sum_err[c].item() / den)
+        range_v = max(float(var_max[c].item() - var_min[c].item()), eps)
+        nrmse_v = float((rmse_v / range_v) * 100.0)
+        rmse_first_v = float(math.sqrt(max(float(var_ss_res_first[c].item() / max(float(var_mask_first[c].item()), eps)), 0.0)))
+        rmse_last_v = float(math.sqrt(max(float(var_ss_res_last[c].item() / max(float(var_mask_last[c].item()), eps)), 0.0)))
+        growth_v = float(rmse_last_v / max(rmse_first_v, eps))
+        row = {
+            "var": str(vname),
+            "bias": bias_v,
+            "mae": mae_v,
+            "rmse": rmse_v,
+            "nrmse_percent": nrmse_v,
+            "rmse_first_24h": rmse_first_v,
+            "rmse_last_24h": rmse_last_v,
+            "rmse_growth_last_vs_first": growth_v,
+        }
+        if worst_var is None or float(row["nrmse_percent"]) > float(worst_var["nrmse_percent"]):
+            worst_var = dict(row)
+        var_rows.append(row)
 
     mse_h = (ss_res_h / torch.clamp_min(mask_h, eps)).cpu().numpy()
     rmse_h = np.sqrt(np.maximum(mse_h, 0.0))
@@ -646,6 +912,19 @@ def main() -> None:
     per_horizon_csv = output_dir / "per_horizon_metrics.csv"
     _write_per_horizon_csv(per_horizon_csv, horizon_hours_axis, mse_h, rmse_h, mae_h, nrmse_pct_h)
 
+    segment_bias_csv = output_dir / "segment_bias_metrics.csv"
+    _write_segment_bias_csv(
+        segment_bias_csv,
+        rows=[
+            {"scope": "overall", "mse": mse, "rmse": rmse, "mae": mae, "bias": bias, "nrmse_percent": nrmse_pct},
+            {"scope": "first_24h", **first_24h_metrics},
+            {"scope": "last_24h", **last_24h_metrics},
+        ],
+    )
+
+    per_variable_csv = output_dir / "per_variable_summary.csv"
+    _write_per_variable_csv(per_variable_csv, var_rows)
+
     fig1 = figures_dir / "horizon_metrics.png"
     _plot_horizon_metrics(fig1, horizon_hours_axis, rmse_h, mae_h, nrmse_pct_h, nrmse_threshold)
 
@@ -660,28 +939,51 @@ def main() -> None:
 
     figure_files = [str(fig1), str(fig2)]
 
-    if sample_pred is not None and sample_target is not None and sample_mask is not None:
-        fig3 = figures_dir / "sample_timeseries_spatial_mean.png"
+    selected_samples: list[dict[str, Any]] = []
+    strategy = str(args.sample_selection).strip().lower()
+    n_plot_samples = max(1, int(args.plot_samples))
+    if strategy == "hard":
+        selected_samples = hard_candidates[:n_plot_samples]
+    elif strategy == "random":
+        selected_samples = random_samples[:n_plot_samples]
+    else:
+        hard_ratio = min(1.0, max(0.0, float(args.hard_sample_ratio)))
+        n_hard = int(round(n_plot_samples * hard_ratio))
+        n_hard = max(1, min(n_plot_samples, n_hard)) if n_plot_samples > 1 else 1
+        n_random = max(0, n_plot_samples - n_hard)
+        selected_samples = hard_candidates[:n_hard] + random_samples[:n_random]
+        dedup: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for item in selected_samples:
+            sid = int(item.get("sample_id", -1))
+            if sid in seen_ids:
+                continue
+            seen_ids.add(sid)
+            dedup.append(item)
+        selected_samples = dedup[:n_plot_samples]
+
+    n_plot = max(1, min(int(args.max_plot_vars), len(var_names)))
+    for idx, item in enumerate(selected_samples, start=1):
+        fig_ts = figures_dir / f"sample_{idx:02d}_timeseries_spatial_mean.png"
         _plot_sample_timeseries(
-            fig3,
-            sample_pred=sample_pred,
-            sample_target=sample_target,
-            sample_mask=sample_mask,
+            fig_ts,
+            sample_pred=item["pred"],
+            sample_target=item["target"],
+            sample_mask=item["mask"],
             var_names=var_names,
             time_step_hours=float(args.time_step_hours),
             max_plot_vars=max(1, int(args.max_plot_vars)),
         )
-        figure_files.append(str(fig3))
+        figure_files.append(str(fig_ts))
 
-        n_plot = max(1, min(int(args.max_plot_vars), len(var_names)))
         for c in range(n_plot):
             vname = var_names[c] if c < len(var_names) else f"var_{c}"
-            fig_map = figures_dir / f"sample_last_horizon_map_{vname}.png"
+            fig_map = figures_dir / f"sample_{idx:02d}_last_horizon_map_{vname}.png"
             _plot_sample_map(
                 fig_map,
-                sample_pred=sample_pred,
-                sample_target=sample_target,
-                sample_mask=sample_mask,
+                sample_pred=item["pred"],
+                sample_target=item["target"],
+                sample_mask=item["mask"],
                 var_name=vname,
                 time_step_hours=float(args.time_step_hours),
                 channel_idx=c,
@@ -717,8 +1019,23 @@ def main() -> None:
             "mse": float(mse),
             "rmse": float(rmse),
             "mae": float(mae),
+            "bias": float(bias),
             "nse": float(nse),
             "nrmse_percent": float(nrmse_pct),
+        },
+        "segmented_metrics": {
+            "first_24h": first_24h_metrics,
+            "last_24h": last_24h_metrics,
+            "delta_last_minus_first": {
+                "rmse": float(last_24h_metrics["rmse"] - first_24h_metrics["rmse"]),
+                "mae": float(last_24h_metrics["mae"] - first_24h_metrics["mae"]),
+                "bias": float(last_24h_metrics["bias"] - first_24h_metrics["bias"]),
+                "nrmse_percent": float(last_24h_metrics["nrmse_percent"] - first_24h_metrics["nrmse_percent"]),
+            },
+        },
+        "per_variable_summary": {
+            "rows": var_rows,
+            "worst_nrmse_var": worst_var,
         },
         "pass": {
             "horizon": bool(pass_horizon),
@@ -727,7 +1044,15 @@ def main() -> None:
         },
         "artifacts": {
             "per_horizon_csv": str(per_horizon_csv),
+            "segment_bias_csv": str(segment_bias_csv),
+            "per_variable_csv": str(per_variable_csv),
             "figures": figure_files,
+        },
+        "sample_selection": {
+            "strategy": strategy,
+            "plot_samples": n_plot_samples,
+            "hard_sample_ratio": float(args.hard_sample_ratio),
+            "selected_count": len(selected_samples),
         },
         "notes": [
             "evaluation is single-file only and uses rolling autoregressive forecasting",
@@ -740,7 +1065,14 @@ def main() -> None:
     report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     summary_md = output_dir / "competition_summary.md"
-    _write_markdown_summary(summary_md, report, figure_files, str(per_horizon_csv))
+    _write_markdown_summary(
+        summary_md,
+        report,
+        figure_files,
+        str(per_horizon_csv),
+        str(segment_bias_csv),
+        str(per_variable_csv),
+    )
 
     verdict_str = "✅ PASS" if pass_all else "❌ FAIL"
     _log.info("=" * 60)
@@ -754,12 +1086,21 @@ def main() -> None:
     _log.info(f"  - MSE            : {mse:.6f}")
     _log.info(f"  - RMSE           : {rmse:.6f}")
     _log.info(f"  - MAE            : {mae:.6f}")
+    _log.info(f"  - Bias           : {bias:.6f}")
     _log.info(f"  - NSE            : {nse:.6f}")
+    _log.info(
+        "  - Segment RMSE   : first24h=%.6f last24h=%.6f (delta=%+.6f)",
+        float(first_24h_metrics["rmse"]),
+        float(last_24h_metrics["rmse"]),
+        float(last_24h_metrics["rmse"] - first_24h_metrics["rmse"]),
+    )
     _log.info("-" * 60)
     _log.info("📁 Generated Artifacts:")
     _log.info(f"  - JSON Report    : {report_json}")
     _log.info(f"  - Markdown       : {summary_md}")
     _log.info(f"  - Metrics CSV    : {per_horizon_csv}")
+    _log.info(f"  - Segment CSV    : {segment_bias_csv}")
+    _log.info(f"  - Per-Var CSV    : {per_variable_csv}")
     _log.info(f"  - Figures ({len(figure_files)})   : {figures_dir}")
     _log.info("=" * 60)
 

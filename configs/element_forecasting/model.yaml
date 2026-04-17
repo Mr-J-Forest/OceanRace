@@ -5,16 +5,16 @@ var_names:
   - ssu
   - ssv
 
-input_steps: 72
-output_steps: 72
+input_steps: 24
+output_steps: 24
 
 # 网络架构参数（5090 32GB 稳定版）
 # 关键点：先压空间注意力显存峰值，再通过梯度累积保证有效 batch。
-d_model: 160
-nhead: 8
-num_layers: 4
-block_size: 4
-dropout: 0.1
+d_model: 192
+nhead: 12
+num_layers: 6
+block_size: 6
+dropout: 0.08
 spatial_downsample: 4
 
 # 多尺度空间分支：patch=4 主分支 + patch=8 辅助残差融合
@@ -25,8 +25,8 @@ multi_scale_aux_weight: 0.35
 
 # 输出细化头：减少空间过平滑
 refine_head_enabled: true
-refine_head_hidden_ratio: 1.5
-refine_head_num_layers: 4
+refine_head_hidden_ratio: 2.0
+refine_head_num_layers: 8
 refine_head_residual: true
 
 # 多周期多谐波时间编码（用于增强周期性变化建模）
@@ -35,3 +35,20 @@ periodic_periods:
   - 12.0
   - 168.0
 periodic_harmonics: 2
+
+# 多专家融合（UNet + TrajGRU）
+moe_enabled: true
+moe_unet_base_channels: 48
+moe_convlstm_hidden_channels: 64
+moe_convlstm_kernel_size: 3
+moe_trajgru_hidden_channels: 64
+moe_trajgru_kernel_size: 3
+moe_trajgru_num_links: 9
+moe_trajgru_flow_hidden_channels: 32
+moe_trajgru_flow_clip: 4.0
+moe_transformer_fusion_alpha: 0.45
+moe_residual_beta: 0.3
+moe_focus_vars:
+  - ssu
+  - ssv
+moe_focus_boost: 0.25

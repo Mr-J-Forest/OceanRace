@@ -83,6 +83,38 @@ def test_hybrid_model_forward_shape() -> None:
     assert out["pred_transformer"].shape == (2, 2, 3, 5, 6)
 
 
+def test_hybrid_model_moe_outputs_and_gate_range() -> None:
+    x = torch.randn(2, 4, 4, 16, 16)
+    model = HybridElementForecastModel(
+        in_channels=4,
+        input_steps=4,
+        output_steps=2,
+        d_model=16,
+        nhead=4,
+        num_layers=2,
+        block_size=4,
+        moe_enabled=True,
+        moe_unet_base_channels=16,
+        moe_convlstm_hidden_channels=16,
+        moe_convlstm_kernel_size=3,
+        moe_transformer_fusion_alpha=0.5,
+        moe_focus_channel_indices=(2, 3),
+        moe_focus_boost=0.2,
+    )
+    out = model(x)
+
+    assert out["pred"].shape == (2, 2, 4, 16, 16)
+    assert out["pred_transformer"].shape == (2, 2, 4, 16, 16)
+    assert out["pred_unet"].shape == (2, 2, 4, 16, 16)
+    assert out["pred_convlstm"].shape == (2, 2, 4, 16, 16)
+
+    gate = out["moe_gate_weights"]
+    assert gate.shape == (2, 2)
+    assert torch.all(gate >= 0.0)
+    assert torch.all(gate <= 1.0)
+    assert torch.allclose(gate.sum(dim=-1), torch.ones(gate.shape[0]), atol=1e-6)
+
+
 def test_dataset_single_data_file_mode(tmp_path) -> None:
     data_file = tmp_path / "data/processed/element_forecasting/all_clean_merged.nc"
     data_file.parent.mkdir(parents=True)
