@@ -1,9 +1,18 @@
 """要素长期预测模型：ViT Transformer + 多专家融合。"""
 from __future__ import annotations
 
+import warnings
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Pre-LN (norm_first=True) 与 PyTorch nested tensor 优化互斥，库会发无害 UserWarning；推理/Web 未走 trainer 的过滤。
+warnings.filterwarnings(
+	"ignore",
+	message="enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True",
+	category=UserWarning,
+)
 
 
 class DepthwiseSeparableRefineHead(nn.Module):

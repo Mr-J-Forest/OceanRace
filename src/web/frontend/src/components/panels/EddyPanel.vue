@@ -109,12 +109,18 @@
               </div>
             </div>
 
+            <!-- 图例放在图表容器外，避免与 Plotly 坐标轴/画布重合 -->
+            <div
+              v-if="eddyResult"
+              class="flex flex-wrap items-center gap-2 mb-2 shrink-0 pl-0.5"
+              aria-label="边界图例"
+            >
+              <span class="px-2 py-1 rounded border border-cyan-400/40 bg-slate-900/90 text-[10px] font-mono text-cyan-200 shadow-sm">蓝线=气旋边界</span>
+              <span class="px-2 py-1 rounded border border-rose-400/40 bg-slate-900/90 text-[10px] font-mono text-rose-200 shadow-sm">红线=反气旋边界</span>
+            </div>
+
             <div class="flex-1 relative min-h-0 bg-slate-900/25 rounded-xl border border-slate-700/60 overflow-hidden shadow-[inset_0_0_0_1px_rgba(6,182,212,0.08)]">
               <div class="absolute inset-0 pointer-events-none bg-gradient-to-b from-tech-cyan/5 to-transparent"></div>
-              <div class="absolute top-3 left-3 z-20 flex items-center gap-2 pointer-events-none">
-                <span class="px-2 py-1 rounded border border-cyan-400/40 bg-cyan-500/10 text-[10px] font-mono text-cyan-200">蓝线=气旋边界</span>
-                <span class="px-2 py-1 rounded border border-rose-400/40 bg-rose-500/10 text-[10px] font-mono text-rose-200">红线=反气旋边界</span>
-              </div>
               <div v-if="!eddyResult" class="absolute inset-0 flex items-center justify-center text-slate-500 font-mono text-sm">
                 先加载数据并选择日期，然后执行预测
               </div>

@@ -21,6 +21,42 @@ from ..services.element_mask import extract_mask
 router = APIRouter(prefix="/api", tags=["element"])
 
 
+def _element_forecast_dataset(data_path: str, norm_path: str) -> ElementForecastWindowDataset:
+    """进程内复用数据集与 NetCDF 句柄；含 data/norm 的 mtime 以便文件更新后自动换新。"""
+    try:
+        dm = float(os.path.getmtime(data_path))
+    except OSError:
+        dm = 0.0
+    try:
+        nm = float(os.path.getmtime(norm_path)) if os.path.isfile(norm_path) else 0.0
+    except OSError:
+        nm = 0.0
+    ap_data = os.path.abspath(data_path)
+    ap_norm = os.path.abspath(norm_path)
+    key = (ap_data, ap_norm, dm, nm, 24, 72)
+    with state.element_predictor_lock:
+        cached = state.element_forecast_dataset_cache.get(key)
+        if cached is not None:
+            return cached
+        ds = ElementForecastWindowDataset(
+            data_file=data_path,
+            input_steps=24,
+            output_steps=72,
+            split=None,
+            norm_stats_path=norm_path,
+        )
+        state.element_forecast_dataset_cache[key] = ds
+        stale = [k for k in state.element_forecast_dataset_cache if k[0] == ap_data and k != key]
+        for k in stale:
+            old = state.element_forecast_dataset_cache.pop(k, None)
+            if old is not None:
+                try:
+                    old._close_all_open_ds()
+                except Exception:
+                    pass
+        return ds
+
+
 @router.get("/default-data-path")
 def get_default_data_path():
     return {"path": "data/processed/element_forecasting/path.txt"}
@@ -34,13 +70,7 @@ def get_dataset_info(req: DatasetInfoRequest):
 
     try:
         norm_path = resolve_data_path_or_path_txt("data/processed/normalization/element_forecasting_norm.json")
-        dataset = ElementForecastWindowDataset(
-            data_file=data_path,
-            input_steps=24,
-            output_steps=72,
-            split=None,
-            norm_stats_path=norm_path,
-        )
+        dataset = _element_forecast_dataset(data_path, norm_path)
 
         if len(dataset) == 0:
             raise HTTPException(status_code=400, detail="Dataset is empty or insufficient steps")
@@ -75,13 +105,7 @@ def run_prediction(req: PredictRequest):
 
     try:
         norm_path = resolve_data_path_or_path_txt("data/processed/normalization/element_forecasting_norm.json")
-        dataset = ElementForecastWindowDataset(
-            data_file=data_path,
-            input_steps=24,
-            output_steps=72,
-            split=None,
-            norm_stats_path=norm_path,
-        )
+        dataset = _element_forecast_dataset(data_path, norm_path)
         if req.start_idx < 0 or req.start_idx >= len(dataset):
             raise HTTPException(status_code=400, detail="Start index out of range")
 
@@ -90,7 +114,23 @@ def run_prediction(req: PredictRequest):
         y_tensor = sample["y"].numpy()
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        predictor = ElementForecastPredictor(checkpoint_path=model_path, device=device, norm_stats_path=norm_path)
+        ap_model = os.path.normcase(os.path.abspath(model_path))
+        try:
+            mtime = float(os.path.getmtime(model_path))
+        except OSError:
+            mtime = 0.0
+        cache_key = (ap_model, device, mtime)
+        with state.element_predictor_lock:
+            predictor = state.element_predictor_cache.get(cache_key)
+            if predictor is None:
+                predictor = ElementForecastPredictor(
+                    checkpoint_path=model_path, device=device, norm_stats_path=norm_path
+                )
+                state.element_predictor_cache[cache_key] = predictor
+                # 防止无限增长：只保留同一模型路径下最新 mtime 的一条
+                stale = [k for k in state.element_predictor_cache if k[0] == ap_model and k != cache_key]
+                for k in stale:
+                    del state.element_predictor_cache[k]
 
         result = predictor.predict_long_horizon(
             x=x_tensor,

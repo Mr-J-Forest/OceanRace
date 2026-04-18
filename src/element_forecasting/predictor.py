@@ -1,6 +1,7 @@
 """要素长期预测推理器。"""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,13 @@ class ElementForecastPredictor:
 		self.model.load_state_dict(ckpt["model_state"], strict=False)
 		self.model.to(self.device)
 		self.model.eval()
+		# 与历史 main1/Gradio 一致：纯 FP32 前向。曾尝试 autocast+cudnn.benchmark，部分环境反而更慢
+		# （benchmark 还会在头几次推理时做卷积算法搜索）。可选：ELEMENT_FORECAST_CUDNN_BENCHMARK=1 再开 benchmark。
+		if self.device.type == "cuda":
+			if os.environ.get("ELEMENT_FORECAST_CUDNN_BENCHMARK", "").strip() in ("1", "true", "yes"):
+				torch.backends.cudnn.benchmark = True
+			torch.backends.cuda.matmul.allow_tf32 = True
+			torch.backends.cudnn.allow_tf32 = True
 		self.var_names = tuple(ckpt.get("var_names", []))
 		self.input_steps = input_steps
 		self.output_steps = output_steps
@@ -90,7 +98,7 @@ class ElementForecastPredictor:
 			out[:, :, c, :, :] = destandardize_tensor(out[:, :, c, :, :], key, self._norm)
 		return out
 
-	@torch.no_grad()
+	@torch.inference_mode()
 	def predict(
 		self,
 		x: torch.Tensor,
@@ -116,7 +124,7 @@ class ElementForecastPredictor:
 			"denormalized": denormalize,
 		}
 
-	@torch.no_grad()
+	@torch.inference_mode()
 	def predict_long_horizon(
 		self,
 		x: torch.Tensor,
@@ -138,6 +146,16 @@ class ElementForecastPredictor:
 		if overlap >= model_steps:
 			overlap = max(0, model_steps - 1)
 		stride = max(1, model_steps - overlap)
+
+		# 单段即可覆盖目标步长时直接一次前向，避免无意义的拼接循环
+		if target_steps <= model_steps:
+			out = self.predict(x, denormalize=denormalize, return_cpu=return_cpu)
+			return {
+				"pred": out["pred"][:, :target_steps],
+				"pred_transformer": out["pred_transformer"][:, :target_steps],
+				"var_names": out["var_names"],
+				"denormalized": denormalize,
+			}
 
 		cur_x = x.to(self.device)
 		out_seq: torch.Tensor | None = None

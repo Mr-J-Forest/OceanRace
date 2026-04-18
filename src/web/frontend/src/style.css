@@ -42,12 +42,30 @@
     @apply w-full bg-slate-900/80 border border-slate-700 rounded-md px-3 py-2 text-sm font-mono text-tech-cyan focus:outline-none focus:border-tech-cyan focus:ring-1 focus:ring-tech-cyan transition-all;
   }
 
+  /*
+   * 按钮反馈：禁止 scale / 外扩阴影动画，避免按下时出现「先变大再变小」。
+   * 原因常见为 hover 大光晕 + active 降 opacity 叠加，或 :hover 在点击过程中短暂消失导致阴影跳变。
+   */
   .tech-btn {
-    @apply relative overflow-hidden font-mono text-sm uppercase tracking-wider font-semibold py-2 px-4 rounded-md transition-all duration-300 active:scale-95;
+    @apply relative overflow-hidden font-mono text-sm uppercase tracking-wider font-semibold py-2 px-4 rounded-md;
+    @apply select-none outline-none;
+    -webkit-tap-highlight-color: transparent;
+    @apply transition-[color,background-color,border-color,opacity] duration-150 ease-out;
+    @apply disabled:opacity-50 disabled:pointer-events-none;
+    transform: scale(1);
+  }
+
+  .tech-btn:focus-visible {
+    @apply ring-2 ring-tech-cyan/50 ring-offset-2 ring-offset-slate-950;
   }
 
   .primary-btn {
-    @apply bg-tech-cyan/10 text-tech-cyan border border-tech-cyan hover:bg-tech-cyan hover:text-black hover:shadow-[0_0_15px_var(--color-tech-cyan-glow)];
+    @apply bg-tech-cyan/10 text-tech-cyan border border-tech-cyan;
+    @apply hover:bg-tech-cyan hover:text-black;
+  }
+
+  .primary-btn:active:not(:disabled) {
+    @apply brightness-95;
   }
 
   .ghost-btn {

@@ -4,4 +4,6 @@ pydantic>=1.10.7
 numpy
 pandas
 xarray
+# 默认 pip 的 torch 常为 CPU 版，GPU 不工作。请按显卡驱动/CUDA 从 https://pytorch.org 选 cu12x 等 wheel，例如:
+# pip install torch --index-url https://download.pytorch.org/whl/cu124
 torch

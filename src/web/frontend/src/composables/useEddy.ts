@@ -14,7 +14,7 @@ const eddyDayIndex = ref(0)
 const eddySelectedDate = ref('')
 const eddyLoading = ref(false)
 const eddyPredicting = ref(false)
-const eddyResult = ref<any>(null)
+export const eddyResult = ref<any>(null)
 const eddyProgress = ref(0)
 const normalizeDateLabel = (label: unknown) => String(label || '').slice(0, 10)
 const eddyMinDate = computed(() => {

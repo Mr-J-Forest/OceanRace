@@ -163,6 +163,10 @@ class ElementForecastWindowDataset(Dataset):
 
         all_starts = [i * self.window_stride for i in range(total_windows)]
         if self.split_mode == "competition_years":
+            # split=None 时最终窗口就是 all_starts，无需加载整段 time、勿遍历全部窗（大数据集上极慢）
+            if split is None:
+                self._windows = all_starts
+                return
             ds_time = open_nc(self.path)
             try:
                 years = _time_years(np.asarray(ds_time["time"].values))
@@ -187,10 +191,8 @@ class ElementForecastWindowDataset(Dataset):
 
             if split in ("train", "val", "test"):
                 self._windows = windows_by_split[split]
-            elif split is None:
-                self._windows = all_starts
             else:
-                raise ValueError(f"invalid split: {split!r}, expected train/val/test/None")
+                raise ValueError(f"invalid split: {split!r}, expected train/val/test")
             return
 
         train_end = int(total_windows * train_ratio)

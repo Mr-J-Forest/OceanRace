@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Reduce random native runtime crashes in mixed NumPy/PyTorch OpenMP environments.
@@ -20,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .routers import anomaly, eddy, element, health
+from .routers.health import print_cuda_startup_banner
 
 try:
     torch.set_num_threads(1)
@@ -28,7 +30,14 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="OceanRace Backend API")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    print_cuda_startup_banner()
+    yield
+
+
+app = FastAPI(title="OceanRace Backend API", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,

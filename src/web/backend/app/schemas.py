@@ -53,3 +53,7 @@ class AnomalyInspectRequest(BaseModel):
     split: str = "test"
     open_file_lru_size: int = 32
     max_points: int = 200
+    recent_window_hours: int = 24
+    snapshot_only: bool = False
+    include_snapshot: bool = False
+    snapshot_index: int | None = None

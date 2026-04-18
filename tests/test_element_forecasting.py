@@ -31,6 +31,7 @@ def test_dataset_single_file_split_windows(tmp_path) -> None:
         output_steps=2,
         window_stride=1,
         split="train",
+        split_mode="ratio",
         split_ratios=(0.5, 0.25, 0.25),
         root=tmp_path,
     )
@@ -41,6 +42,7 @@ def test_dataset_single_file_split_windows(tmp_path) -> None:
         output_steps=2,
         window_stride=1,
         split="val",
+        split_mode="ratio",
         split_ratios=(0.5, 0.25, 0.25),
         root=tmp_path,
     )
@@ -51,6 +53,7 @@ def test_dataset_single_file_split_windows(tmp_path) -> None:
         output_steps=2,
         window_stride=1,
         split="test",
+        split_mode="ratio",
         split_ratios=(0.5, 0.25, 0.25),
         root=tmp_path,
     )

@@ -59,7 +59,7 @@
                   <input type="range" v-model.number="startIdx" min="0" :max="maxIndex" class="tech-slider" />
                 </div>
 
-                <button class="tech-btn primary-btn w-full mt-6 flex items-center justify-center gap-2 text-sm shadow-[0_0_20px_rgba(6,182,212,0.15)] hover:shadow-[0_0_25px_rgba(6,182,212,0.4)]" @click="runPrediction">
+                <button class="tech-btn primary-btn w-full mt-6 flex items-center justify-center gap-2 text-sm" @click="runPrediction">
                   <Zap class="w-4 h-4 animate-pulse" /> START FORECAST
                 </button>
               </div>

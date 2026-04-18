@@ -71,6 +71,7 @@ import {
 } from 'lucide-vue-next'
 import { useForecast, resizeForecastCharts } from './composables/useForecast'
 import { useEddy, resizeEddyChart, disposeEddyTimers } from './composables/useEddy'
+import { resizeAnomalyCharts } from './composables/useAnomaly'
 import ForecastPanel from './components/panels/ForecastPanel.vue'
 import EddyPanel from './components/panels/EddyPanel.vue'
 import ManagerPanel from './components/panels/ManagerPanel.vue'
@@ -102,6 +103,9 @@ const handleResize = () => {
   }
   if (activeModule.value === 'eddy') {
     resizeEddyChart()
+  }
+  if (activeModule.value === 'anomaly') {
+    resizeAnomalyCharts()
   }
 }
 
