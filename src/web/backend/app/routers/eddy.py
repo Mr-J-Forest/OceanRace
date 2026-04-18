@@ -21,7 +21,7 @@ from utils.logger import get_logger
 
 from .. import eddy_core as ec
 from .. import state
-from ..paths import resolve_data_path_or_path_txt, resolve_path
+from ..paths import resolve_path
 from ..schemas import (
     EddyDatasetInfoRequest,
     EddyDateIndexRequest,
@@ -50,8 +50,13 @@ def get_eddy_default_data_path():
 @router.post("/dataset-info")
 def get_eddy_dataset_info(req: EddyDatasetInfoRequest):
     try:
-        data_path = resolve_data_path_or_path_txt(req.data_path)
-        if not os.path.exists(data_path):
+        data_path = ec.resolve_eddy_clean_nc_path(req.data_path)
+        if not data_path:
+            raise HTTPException(
+                status_code=404,
+                detail="无法解析涡旋数据文件：path.txt 若指向目录，请确保其下存在 *_clean.nc（或 19930101_20241231_clean.nc）。",
+            )
+        if not os.path.isfile(data_path):
             raise HTTPException(status_code=404, detail=f"Data file not found: {data_path}")
 
         ds = xr.open_dataset(data_path)
@@ -101,11 +106,14 @@ async def run_eddy_prediction_day(req: EddyPredictDayRequest):
     t0_total = perf_counter()
     try:
         model_path = resolve_path(req.model_path)
-        data_path = resolve_data_path_or_path_txt(req.data_path)
+        data_path = ec.resolve_eddy_clean_nc_path(req.data_path)
         if not os.path.exists(model_path):
             raise HTTPException(status_code=404, detail=f"Model not found: {model_path}")
-        if not os.path.exists(data_path):
-            raise HTTPException(status_code=404, detail=f"Data file not found: {data_path}")
+        if not data_path or not os.path.isfile(data_path):
+            raise HTTPException(
+                status_code=404,
+                detail="无法解析涡旋数据文件：path.txt 若指向目录，请确保其下存在 *_clean.nc。",
+            )
 
         input_steps = max(1, int(req.input_steps))
         t0_read = perf_counter()
@@ -200,9 +208,12 @@ async def run_eddy_prediction_day(req: EddyPredictDayRequest):
 @router.post("/date-index")
 def get_eddy_date_index(req: EddyDateIndexRequest):
     try:
-        data_path = resolve_data_path_or_path_txt(req.data_path)
-        if not os.path.exists(data_path):
-            raise HTTPException(status_code=404, detail=f"Data file not found: {data_path}")
+        data_path = ec.resolve_eddy_clean_nc_path(req.data_path)
+        if not data_path or not os.path.isfile(data_path):
+            raise HTTPException(
+                status_code=404,
+                detail="无法解析涡旋数据文件：path.txt 若指向目录，请确保其下存在 *_clean.nc。",
+            )
 
         ds = xr.open_dataset(data_path)
         try:
@@ -243,11 +254,14 @@ def get_eddy_date_index(req: EddyDateIndexRequest):
 async def run_eddy_prediction(req: EddyPredictRequest):
     try:
         model_path = resolve_path(req.model_path)
-        data_path = resolve_data_path_or_path_txt(req.data_path)
+        data_path = ec.resolve_eddy_clean_nc_path(req.data_path)
         if not os.path.exists(model_path):
             raise HTTPException(status_code=404, detail=f"Model not found: {model_path}")
-        if not os.path.exists(data_path):
-            raise HTTPException(status_code=404, detail=f"Data file not found: {data_path}")
+        if not data_path or not os.path.isfile(data_path):
+            raise HTTPException(
+                status_code=404,
+                detail="无法解析涡旋数据文件：path.txt 若指向目录，请确保其下存在 *_clean.nc。",
+            )
 
         x_batch, time_indices, adt_maps, _max_index = await asyncio.to_thread(
             ec._build_unlabeled_eddy_batch,

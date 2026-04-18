@@ -16,7 +16,7 @@ from src.eddy_detection.model import EddyUNet
 from src.eddy_detection.predictor import load_checkpoint
 
 from . import state
-from .paths import read_path_txt, resolve_path
+from .paths import read_path_txt, resolve_data_path_or_path_txt, resolve_path
 
 
 
@@ -38,17 +38,40 @@ def _build_boundary_mask(mask: np.ndarray) -> np.ndarray:
     return boundary.astype(np.uint8)
 
 
+def _clean_nc_under_eddy_dir(base_dir: Path) -> str | None:
+    """If base_dir is a processed-eddy directory, return path to a clean NetCDF file."""
+    if not base_dir.exists() or not base_dir.is_dir():
+        return None
+    direct_clean = base_dir / "19930101_20241231_clean.nc"
+    if direct_clean.is_file():
+        return str(direct_clean)
+    candidates = sorted(base_dir.rglob("*_clean.nc"))
+    if candidates:
+        return str(candidates[0])
+    return None
+
+
+def resolve_eddy_clean_nc_path(raw_path: str) -> str:
+    """Resolve path.txt / data dir / or direct .nc to an absolute clean NetCDF path for xarray."""
+    resolved = resolve_data_path_or_path_txt(raw_path)
+    if not resolved:
+        return ""
+    p = Path(resolved)
+    if p.is_file():
+        return str(p)
+    if p.is_dir():
+        hit = _clean_nc_under_eddy_dir(p)
+        return hit or ""
+    return str(p)
+
+
 def _default_eddy_paths() -> tuple[str, str]:
     path_txt_dir = read_path_txt("data/processed/eddy_detection/path.txt")
     if path_txt_dir:
         base_dir = Path(resolve_path(path_txt_dir))
-        if base_dir.exists() and base_dir.is_dir():
-            direct_clean = base_dir / "19930101_20241231_clean.nc"
-            if direct_clean.exists():
-                return (str(direct_clean), "")
-            candidates = sorted(base_dir.rglob("*_clean.nc"))
-            if candidates:
-                return (str(candidates[0]), "")
+        hit = _clean_nc_under_eddy_dir(base_dir)
+        if hit:
+            return (hit, "")
 
     split_manifest = resolve_path("data/processed/splits/eddy_merged_time.json")
     if os.path.exists(split_manifest):
