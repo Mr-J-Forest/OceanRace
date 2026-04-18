@@ -28,4 +28,4 @@
 
 - 详细属性（units、calendar、_FillValue 等）请查看 CSV 的 `attrs` 列。
 - `polarity`: 1=cyclonic, 2=anticyclonic。
-- 若用于当前仓库的训练链路，请再通过 `02h_fix_meta4_mask_background.py` 和 `02j_objects_to_mask_parallel.py` 转换为训练用 mask。
+- 若用于当前仓库训练链路，请直接运行 `scripts/02_preprocess_eddy.py`（单脚本内已完成对象 -> mask -> 背景显式 0）。

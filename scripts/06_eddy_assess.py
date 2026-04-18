@@ -1,4 +1,4 @@
-"""中尺度涡旋推理导出：边界、中心、旋转方向 + 测试集指标。"""
+"""中尺度涡旋评估导出：边界、中心、旋转方向 + 测试集指标。"""
 from __future__ import annotations
 
 import argparse
@@ -40,11 +40,11 @@ def _rotation_name(class_id: int) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="涡旋推理与结果导出")
+    ap = argparse.ArgumentParser(description="涡旋评估与结果导出")
     ap.add_argument(
         "--time-split-manifest",
         type=Path,
-        default=ROOT / "data/processed/splits/eddy_merged_time.json",
+        default=ROOT / "data/processed/splits/eddy_merged_time_competition.json",
     )
     ap.add_argument(
         "--checkpoint",
@@ -72,7 +72,7 @@ def main() -> None:
     args = ap.parse_args()
 
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-    setup_logging(log_file=ROOT / "outputs/eddy_detection/infer_eddy.log")
+    setup_logging(log_file=ROOT / "outputs/eddy_detection/assess_eddy.log")
 
     if not args.checkpoint.is_file():
         raise FileNotFoundError(f"checkpoint not found: {args.checkpoint}")

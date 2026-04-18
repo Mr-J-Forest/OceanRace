@@ -71,10 +71,8 @@ OceanRace/
 │   ├── README.md
 │   ├── 01_data_inspect.py     # 数据探查
 │   ├── 02_preprocess_eddy.py / 02_preprocess_element.py / 02_preprocess_anomaly.py  # 预处理
-│   ├── 02c_generate_meta4_labels.py      # META4 对象级标签生成
-│   ├── 02h_fix_meta4_mask_background.py  # 将涡旋 mask 背景显式修正为 0
-│   ├── 02j_objects_to_mask_parallel.py   # 对象级标签转像素级 mask
 │   ├── 03_train_eddy.py       # 涡旋 U-Net 训练与评估
+│   ├── 06_eddy_assess.py      # 涡旋测试集评估与对象导出
 │   ├── 04_train_forecast.py   # 要素预报训练
 │   ├── 05_train_anomaly.py    # 异常检测训练（支持 --baseline）
 │   ├── 06_anomaly_assess.py   # 异常检测评估
@@ -93,9 +91,12 @@ OceanRace/
 | `scripts/README.md` | 脚本说明、日志约定、基线实验衔接、典型流程 |
 | `scripts/01_data_inspect.py` | 只读：抽样 `data/raw`，缺测率与最值（可 `--out JSON`） |
 | `scripts/02_preprocess_*.py` | 各任务 raw → `data/processed/`，划分与训练集标准化；见 `scripts/README.md` |
+| `scripts/02_preprocess_eddy.py` | 涡旋唯一预处理入口：对象识别、像素 mask、背景置 0、赛题切分 |
+| `scripts/03_train_eddy.py` | 涡旋 U-Net 训练入口 |
+| `scripts/06_eddy_assess.py` | 涡旋测试集评估与对象导出 |
 | `scripts/06_element_assess.py` | 要素预报比赛口径验收（单文件、滚动预测、阈值 PASS/FAIL），见 `scripts/README.md` |
 | `scripts/07_web_run.py` | 一键启动 Web 开发环境（默认同时起后端 uvicorn 与前端 Vite，支持 `--backend-only`/`--frontend-only`） |
-| `scripts/03_train_eddy.py` 等 | 涡旋/要素/异常训练与其它工具脚本；要素预报主模型用 `python scripts/04_train_forecast.py` |
+| `scripts/04_train_forecast.py` / `scripts/05_train_anomaly.py` | 要素与异常任务训练入口 |
 | `src/web/README.md` | Web 前端（Vue/Vite）、后端 API 与运行方式 |
 | `src/baseline/` | 基线实验代码（`PYTHONPATH=src`，如 `python -m baseline.element_forecasting.train`） |
 | `src/baseline/element_forecasting/README.md` | 要素 ConvLSTM 基线模块与运行方式 |
@@ -149,7 +150,7 @@ OceanRace/
 
 **职责：** 基于 META4 对象级涡旋标注构建像素级训练标签，训练 U-Net 做涡旋分割与识别，并输出边界、中心与旋转方向。
 
-**当前实现链路：** `02c_generate_meta4_labels.py` 生成 META4 对象级标签 → `02h_fix_meta4_mask_background.py` 将背景显式设为 0 → `02j_objects_to_mask_parallel.py` 生成训练用 mask 标签 → `03_train_eddy.py` 训练/评估 U-Net → `03b_infer_eddy.py`、`03c_visualize_eddy_examples.py`、`03d_eddy_track_stats.py` 做推理、可视化与统计。
+**当前实现链路：** `02_preprocess_eddy.py` 生成训练用涡旋 mask（对象级 -> 像素级 -> 背景显式 0）→ `03_train_eddy.py` 训练 U-Net → `06_eddy_assess.py` 在测试集上做评估与对象导出。
 
 **文件：** `dataset.py` · `model.py` · `trainer.py` · `predictor.py` · `evaluator.py`
 

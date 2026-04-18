@@ -50,7 +50,7 @@ def _default_eddy_paths() -> tuple[str, str]:
             if candidates:
                 return (str(candidates[0]), "")
 
-    split_manifest = resolve_path("data/processed/splits/eddy_merged_time.json")
+        split_manifest = resolve_path("data/processed/splits/eddy_merged_time_competition.json")
     if os.path.exists(split_manifest):
         try:
             with open(split_manifest, "r", encoding="utf-8") as f:

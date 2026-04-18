@@ -9,21 +9,13 @@
 | 脚本 | 作用 |
 |------|------|
 | `01_data_inspect.py` | 只读抽样统计 `data/raw` 下 NetCDF |
-| `02_preprocess_eddy.py` | 涡旋一键预处理：clean + META4 像素标签（02c+02h）+ split + stats |
+| `02_preprocess_eddy.py` | 涡旋一键预处理（单脚本）：对象识别 -> 像素 mask -> 背景显式 0 -> 赛题切分 |
 | `02_preprocess_element.py` | 要素一键预处理：clean + merge + split + stats（可直接接 `04_train_forecast.py`） |
 | `02_preprocess_anomaly.py` | 异常一键预处理：clean + split + stats（可直接接 `05_train_anomaly.py`） |
 | `sync_data_config.py` | 仅根据已有 `splits/*.json` 与 `normalization/*_norm.json` 回写 `data_config.yaml` |
 | `validate_processed.py` | 校验三任务 manifest 路径与 processed 抽检 |
-| `02c_generate_meta4_labels.py` | 生成 META4 涡旋对象级标签 |
-| `02d_meta4_parallel.py` | 并行生成 META4 对象级标签（旧流程封装） |
-| `02e_generate_meta4_objects.py` | 生成 META4 对象文件 |
-| `02f_meta4_objects_parallel.py` | 并行生成 META4 对象文件 |
-| `02g_export_meta4_schema.py` | 导出 META4 对象变量说明/schema |
-| `02h_fix_meta4_mask_background.py` | 将 META4 mask 背景显式修正为 0 |
-| `02h_objects_to_pixel_mask.py` | 将对象级结果转为像素级 mask |
-| `02i_split_eddy_competition.py` | 将单文件涡旋数据按比赛/时间切分 |
-| `02j_objects_to_mask_parallel.py` | 并行将对象级标签转为像素级 mask |
 | `03_train_eddy.py` | 涡旋识别训练入口（读取 META4 mask 标签，训练 U-Net 并评估） |
+| `06_eddy_assess.py` | 涡旋测试集评估入口（输出 test 指标与对象清单） |
 | `04_train_forecast.py` | 要素预报训练入口（支持命令行覆盖参数） |
 | `05_train_anomaly.py` | 风-浪异常训练与评估（主模型/基线可切换，支持阈值策略、labels/events） |
 | `06_anomaly_assess.py` | 异常评估：`templates`（labels/events 模板）/ `ibtracs`（IBTrACS 标签）/ `compare`（多方法对比）；实现见 `src/anomaly_detection/assess/` |
@@ -108,4 +100,5 @@ python scripts/04_train_forecast.py --epochs 5 --batch-size 2 --help
 
 1. `01_data_inspect.py`：了解 raw 数据质量（可选 `--out` 保存 JSON）。
 2. 按任务分别运行 `02_preprocess_eddy.py` / `02_preprocess_element.py` / `02_preprocess_anomaly.py`（或只跑你当前要训练的任务）。
-3. **训练**：要素预报 `python scripts/04_train_forecast.py`；其它任务用 `src/<任务>/dataset.py` 或 `src/baseline/<任务>/`。
+3. **涡旋链路**：`02_preprocess_eddy.py` -> `03_train_eddy.py` -> `06_eddy_assess.py`。
+4. **其它任务训练**：要素 `python scripts/04_train_forecast.py`，异常 `python scripts/05_train_anomaly.py`。
