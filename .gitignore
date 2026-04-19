@@ -79,3 +79,6 @@ Thumbs.db
 # 任务配置：configs/<任务>/ 下 model.yaml、train.yaml 等随仓库维护，不采用 *.yaml.example 模板流程
 # 仅敏感项单独文件：configs/*.secret（勿将密钥写入可提交的 yaml）
 configs/*.secret
+
+# Drive upload temp files
+.tmp.driveupload/

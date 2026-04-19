@@ -46,7 +46,6 @@
     <div class="flex-1 overflow-hidden p-6 relative">
       <ForecastPanel v-if="activeModule === 'forecast'" />
       <EddyPanel v-else-if="activeModule === 'eddy'" />
-      <ManagerPanel v-else-if="activeModule === 'manager'" />
       <AnomalyPanel v-else-if="activeModule === 'anomaly'" />
 
       <section v-else class="h-full flex items-center justify-center">
@@ -66,19 +65,16 @@ import {
   Activity,
   Waves,
   Compass,
-  ShieldAlert,
-  LayoutDashboard
+  ShieldAlert
 } from 'lucide-vue-next'
 import { useForecast, resizeForecastCharts } from './composables/useForecast'
 import { useEddy, resizeEddyChart, disposeEddyTimers } from './composables/useEddy'
 import { resizeAnomalyCharts } from './composables/useAnomaly'
 import ForecastPanel from './components/panels/ForecastPanel.vue'
 import EddyPanel from './components/panels/EddyPanel.vue'
-import ManagerPanel from './components/panels/ManagerPanel.vue'
 import AnomalyPanel from './components/panels/AnomalyPanel.vue'
 
 const modules = [
-  { key: 'manager', label: '管理驾驶舱', icon: markRaw(LayoutDashboard) },
   { key: 'eddy', label: '涡旋检测', icon: markRaw(Compass) },
   { key: 'forecast', label: '要素预测', icon: markRaw(Waves) },
   { key: 'anomaly', label: '异常检测', icon: markRaw(ShieldAlert) }

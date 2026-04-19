@@ -33,6 +33,28 @@ const eddyDateHint = computed(() => {
   if (idx >= 0) return ''
   return `该日期不在数据集中，将自动使用最近可选日期（${normalizeDateLabel(eddyDates.value[eddyDayIndex.value] || '')}）。`
 })
+const eddySelectedCenter = ref(null)
+
+const eddySelectedRadius = computed(() => {
+  if (!eddySelectedCenter.value || !eddySelectedCenter.value.area) return '0.0'
+  const latRad = Math.abs(eddySelectedCenter.value.lat) * Math.PI / 180
+  const cellArea = 13.875 * 13.875 * Math.cos(latRad) // km^2
+  const physArea = eddySelectedCenter.value.area * cellArea
+  return Math.sqrt(physArea / Math.PI).toFixed(1)
+})
+
+const eddySelectedVelocity = computed(() => {
+  if (!eddySelectedCenter.value || !eddySelectedCenter.value.area) return '0.000'
+  const radius = parseFloat(eddySelectedRadius.value)
+  if (radius <= 0) return '0.000'
+  // v = w * R -> w = v / R. Assuming mean velocity v ~ 0.3 m/s = 25.92 km/d
+  return (25.92 / radius).toFixed(3)
+})
+
+const eddyWorkbenchTab = ref<'forecast' | 'track'>('forecast')
+const eddyTrackData = ref(null)
+const eddyTrackLoading = ref(false)
+
 const startEddyProgress = () => {
   if (eddyProgressTimer) clearInterval(eddyProgressTimer)
   eddyProgress.value = 8
@@ -61,6 +83,10 @@ const resetEddyProgress = () => {
 watch(eddyDayIndex, (idx) => {
   if (idx < 0 || idx >= eddyDates.value.length) return
   eddySelectedDate.value = normalizeDateLabel(eddyDates.value[idx])
+  
+  // Date changed: clear track data and selection
+  eddySelectedCenter.value = null
+  eddyTrackData.value = null
 })
 
 watch(eddySelectedDate, (selected) => {
@@ -187,6 +213,32 @@ const downloadEddyInfo = () => {
   a.remove()
   URL.revokeObjectURL(url)
 }
+
+const loadEddyTrack = async () => {
+  if (!eddySelectedCenter.value || eddyDates.value.length === 0) return
+  eddyTrackLoading.value = true
+  try {
+    const res = await api.post('/eddy/track', {
+      data_path: eddyDataPath.value,
+      model_path: eddyModelPath.value,
+      start_day_index: eddyDayIndex.value,
+      r: eddySelectedCenter.value.r,
+      c: eddySelectedCenter.value.c,
+      class_id: eddySelectedCenter.value.class_id
+    })
+    eddyTrackData.value = res.data
+  } catch (err: unknown) {
+    const e = err as { response?: { data?: { detail?: string } }; message?: string }
+    alert(`追踪失败: ${e.response?.data?.detail || e.message}`)
+  } finally {
+    eddyTrackLoading.value = false
+    if (eddyTrackData.value) {
+      await nextTick()
+      renderEddyTrackChart()
+    }
+  }
+}
+
 const renderEddyPlot = (payload) => {
   const container = document.getElementById('eddy-chart')
   if (!container || !payload) return
@@ -242,43 +294,49 @@ const renderEddyPlot = (payload) => {
   })
 
   if (centers.length > 0) {
-    const cyclonicCenters = centers.filter((c) => Number(c?.[2]) === 1)
-    const anticyclonicCenters = centers.filter((c) => Number(c?.[2]) === 2)
-    const otherCenters = centers.filter((c) => !Number.isFinite(Number(c?.[2])) || Number(c?.[2]) <= 0)
+    const cyclonicCenters = centers.filter((c) => Number(c?.class_id) === 1)
+    const anticyclonicCenters = centers.filter((c) => Number(c?.class_id) === 2)
+    const otherCenters = centers.filter((c) => !Number.isFinite(Number(c?.class_id)) || Number(c?.class_id) <= 0)
 
     if (cyclonicCenters.length > 0) {
       traces.push({
-        x: cyclonicCenters.map((c) => Number(c?.[1])),
-        y: cyclonicCenters.map((c) => Number(c?.[0])),
+        x: cyclonicCenters.map((c) => Number(c?.c)),
+        y: cyclonicCenters.map((c) => Number(c?.r)),
         type: 'scatter',
         mode: 'markers',
         marker: { color: cyclonicColor, size: 4, symbol: 'x' },
-        name: 'cyclonic-center',
-        hovertemplate: 'cyclonic center<br>x=%{x:.1f}, y=%{y:.1f}<extra></extra>'
+        name: '气旋式',
+        hovertext: cyclonicCenters.map((c) => `气旋式涡旋<br>Lat: ${Number(c.lat).toFixed(2)}<br>Lon: ${Number(c.lon).toFixed(2)}<br>像素面积: ${c.area}`),
+        hoverinfo: 'text',
+        customdata: cyclonicCenters // for click event
       })
     }
 
     if (anticyclonicCenters.length > 0) {
       traces.push({
-        x: anticyclonicCenters.map((c) => Number(c?.[1])),
-        y: anticyclonicCenters.map((c) => Number(c?.[0])),
+        x: anticyclonicCenters.map((c) => Number(c?.c)),
+        y: anticyclonicCenters.map((c) => Number(c?.r)),
         type: 'scatter',
         mode: 'markers',
         marker: { color: anticyclonicColor, size: 4, symbol: 'x' },
-        name: 'anticyclonic-center',
-        hovertemplate: 'anticyclonic center<br>x=%{x:.1f}, y=%{y:.1f}<extra></extra>'
+        name: '反气旋式',
+        hovertext: anticyclonicCenters.map((c) => `反气旋式涡旋<br>Lat: ${Number(c.lat).toFixed(2)}<br>Lon: ${Number(c.lon).toFixed(2)}<br>像素面积: ${c.area}`),
+        hoverinfo: 'text',
+        customdata: anticyclonicCenters
       })
     }
 
     if (otherCenters.length > 0) {
       traces.push({
-        x: otherCenters.map((c) => Number(c?.[1])),
-        y: otherCenters.map((c) => Number(c?.[0])),
+        x: otherCenters.map((c) => Number(c?.c)),
+        y: otherCenters.map((c) => Number(c?.r)),
         type: 'scatter',
         mode: 'markers',
         marker: { color: '#f8fafc', size: 7, symbol: 'diamond-open', line: { width: 1.2, color: '#0f172a' } },
-        name: 'center',
-        hovertemplate: 'center<br>x=%{x:.1f}, y=%{y:.1f}<extra></extra>'
+        name: '未知类型',
+        hovertext: otherCenters.map((c) => `未知涡旋<br>Lat: ${Number(c.lat).toFixed(2)}<br>Lon: ${Number(c.lon).toFixed(2)}<br>像素面积: ${c.area}`),
+        hoverinfo: 'text',
+        customdata: otherCenters
       })
     }
   }
@@ -310,12 +368,68 @@ const renderEddyPlot = (payload) => {
   }
 
   Plotly.react(container, traces, layout, { responsive: true, displayModeBar: false })
+
+  container.on('plotly_click', (data) => {
+    if (data.points && data.points.length > 0) {
+      const pt = data.points[0]
+      if (pt.customdata) {
+        eddySelectedCenter.value = pt.customdata
+      }
+    }
+  })
 }
 
+const renderEddyTrackChart = () => {
+  const container = document.getElementById('eddy-track-chart')
+  if (!container || !eddyTrackData.value || !eddyTrackData.value.nodes) return
+
+  const nodes = eddyTrackData.value.nodes
+  
+  const traces = [
+    {
+      x: nodes.map(n => n.day_index),
+      y: nodes.map(n => n.intensity),
+      type: 'scatter',
+      mode: 'lines+markers',
+      line: { color: '#0ea5e9', width: 2 },
+      marker: { color: '#38bdf8', size: 6 },
+      name: '核心温盐异常',
+      hovertemplate: 'Day %{x}<br>强度: %{y:.2f}<extra></extra>'
+    }
+  ]
+
+  const layout = {
+    ...getChartLayoutBase(''),
+    margin: { l: 40, r: 20, t: 20, b: 30 },
+    xaxis: {
+      title: { text: '时间 (Day)', font: { color: '#64748b', size: 10 } },
+      tickfont: { color: '#64748b', size: 10 },
+      showgrid: true,
+      gridcolor: 'rgba(51,65,85,0.4)',
+      zeroline: false
+    },
+    yaxis: {
+      title: { text: '核心异常强度', font: { color: '#64748b', size: 10 } },
+      tickfont: { color: '#64748b', size: 10 },
+      showgrid: true,
+      gridcolor: 'rgba(51,65,85,0.4)',
+      zeroline: false
+    },
+    showlegend: false,
+    hovermode: 'x unified',
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)'
+  }
+
+  Plotly.react(container, traces, layout, { responsive: true, displayModeBar: false })
+}
 
 export function resizeEddyChart() {
   if (eddyResult.value) {
     Plotly.Plots.resize('eddy-chart')
+  }
+  if (eddyTrackData.value) {
+    Plotly.Plots.resize('eddy-track-chart')
   }
 }
 
@@ -341,6 +455,13 @@ export function useEddy() {
     eddyMinDate,
     eddyMaxDate,
     eddyDateHint,
+    eddySelectedCenter,
+    eddySelectedRadius,
+    eddySelectedVelocity,
+    eddyWorkbenchTab,
+    eddyTrackData,
+    eddyTrackLoading,
+    loadEddyTrack,
     loadEddyDefaults,
     loadEddyDataInfo,
     shiftEddyDate,

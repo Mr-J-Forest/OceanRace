@@ -12,6 +12,10 @@ class PredictRequest(BaseModel):
     model_path: str
     data_path: str
     start_idx: int
+    """每个预报步对应的小时数（用于前端时效轴标注，默认 1）。"""
+    step_hours: float = 1.0
+    """是否在缓存中加载「约一年前最近时刻」历史同期场（略增推理后耗时）。"""
+    include_historical: bool = True
 
 
 class EddyDatasetInfoRequest(BaseModel):

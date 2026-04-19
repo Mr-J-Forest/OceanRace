@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, watch } from 'vue'
 import { api } from '../api/client'
 import Plotly from 'plotly.js-dist-min'
 import { getChartLayoutBase } from './plotly/chartLayout'
@@ -13,6 +13,8 @@ const loadingInfo = ref(false)
 const predicting = ref(false)
 const hasResult = ref(false)
 const sessionId = ref('')
+const geoLon = ref([])
+const geoLat = ref([])
 
 const totalSteps = ref(0)
 const currentStep = ref(0)
@@ -29,7 +31,24 @@ const colorRangeCache = new Map()
 const showQuiver = ref(true)
 const playbackSpeed = ref(1.0)
 const curveTitle = ref('区域变化趋势')
-const STEP_HOURS = 1
+/** 单步对应预报小时数（与后端 PredictRequest.step_hours 一致） */
+const stepHours = ref(1)
+/** 空间展示子页：预报场 | 实况·偏差 | 异常预警 | 关联分析 */
+const spatialWorkbenchTab = ref<'forecast' | 'compare' | 'warning' | 'correlation'>('forecast')
+const compareVarIndex = ref(0)
+/** 底部时序折线图显隐；关闭时主图区占满高度，避免地图被压扁 */
+const showCurvePanel = ref(true)
+
+// --- 异常预警与关联分析状态 ---
+const warningsData = ref(null)
+const loadingWarning = ref(false)
+const warningThresholds = ref({ SST: 1.5, SSS: 0.5, SSUV: 0.3 })
+const currentWarningVar = ref('')
+
+const correlationData = ref(null)
+const loadingCorr = ref(false)
+const corrVar1 = ref('SST')
+const corrVar2 = ref('SSS')
 
 const loadDefaultDataPath = async () => {
   try {
@@ -71,11 +90,20 @@ const runPrediction = async () => {
 
     sessionId.value = res.data.session_id
     totalSteps.value = res.data.steps
+    geoLon.value = res.data.lon || []
+    geoLat.value = res.data.lat || []
     currentStep.value = 0
     hasResult.value = true
+    if (res.data.step_hours != null && Number.isFinite(Number(res.data.step_hours))) {
+      stepHours.value = Math.max(0.25, Number(res.data.step_hours))
+    }
 
     await nextTick()
-    await Promise.all([loadStepData(), loadCurveData()])
+    const tasks = [loadStepData()]
+    if (showCurvePanel.value) tasks.push(loadCurveData())
+    await Promise.all(tasks)
+    await nextTick()
+    resizeForecastCharts(hasResult.value)
   } catch (err) {
     alert(`核心推理引擎故障: ${err.response?.data?.detail || err.message}`)
   } finally {
@@ -88,17 +116,155 @@ const loadStepData = async (stepIdx = currentStep.value) => {
   const targetStep = Number.isFinite(stepIdx) ? Number(stepIdx) : Number(currentStep.value)
   const reqSeq = ++stepRequestSeq
   try {
-    const res = await api.get(`/predict/${sessionId.value}/step/${targetStep}`)
+    const res = await api.get(`/predict/${sessionId.value}/step/${targetStep}`, { params: { compare: 1 } })
     // Ignore stale responses during rapid slider drags.
     if (reqSeq < stepRequestSeq || reqSeq < lastAppliedStepSeq) return
     lastAppliedStepSeq = reqSeq
     lastLoadedStepIdx = targetStep
     currentStepDataCache = res.data
     renderSpatialPlot(currentStepDataCache)
-    updateVerticalLineOnCurve()
+    renderCompareSpatial(currentStepDataCache)
+    if (showCurvePanel.value) updateVerticalLineOnCurve()
   } catch (err) {
     console.error('数据游标读取失败', err)
   }
+}
+
+const renderWarningHeatmap = (varName) => {
+  const container = document.getElementById('warning-spatial-chart')
+  if (!container || !warningsData.value?.masks) return
+
+  const maskGrid = warningsData.value.masks[varName]
+  if (!maskGrid) return
+
+  const style = getVariableRenderStyle(varName)
+  const renderRows = maskGrid.length
+  const renderCols = renderRows > 0 ? maskGrid[0].length : 0
+
+  let xCoords, yCoords
+  if (geoLon.value.length > 1 && geoLat.value.length > 1) {
+    const lons = geoLon.value
+    const lats = geoLat.value
+    xCoords = Array.from({ length: renderCols }, (_, i) => lons[0] + (i / Math.max(1, renderCols - 1)) * (lons[lons.length - 1] - lons[0]))
+    yCoords = Array.from({ length: renderRows }, (_, i) => lats[0] + (i / Math.max(1, renderRows - 1)) * (lats[lats.length - 1] - lats[0]))
+  }
+
+  const trace = {
+    z: maskGrid,
+    ...(xCoords && yCoords ? { x: xCoords, y: yCoords } : {}),
+    type: 'heatmap',
+    zsmooth: false,
+    colorscale: [
+      [0.0, 'rgba(0,0,0,0)'],
+      [0.33, 'rgba(0,0,0,0)'],
+      [0.34, '#fde047'], // Level 1: 轻度 (Yellow)
+      [0.66, '#fde047'],
+      [0.67, '#f97316'], // Level 2: 中度 (Orange)
+      [0.99, '#f97316'],
+      [1.0, '#ef4444']   // Level 3: 重度 (Red)
+    ],
+    zmin: 0,
+    zmax: 3,
+    hoverongaps: false,
+    showscale: true,
+    colorbar: {
+      title: { text: '预警级别', font: { size: 9, color: '#94a3b8' } },
+      tickvals: [1, 2, 3],
+      ticktext: ['轻度', '中度', '重度'],
+      len: 0.8,
+      thickness: 10,
+      x: 1.02,
+      xanchor: 'left',
+      y: 0.5,
+      yanchor: 'middle',
+      tickfont: { color: '#94a3b8', size: 8, family: 'JetBrains Mono, monospace' },
+      outlinewidth: 0,
+      bgcolor: 'rgba(3,7,18,0.55)',
+      bordercolor: 'rgba(6,182,212,0.25)',
+      borderwidth: 1
+    },
+    hoverlabel: { bgcolor: '#0f172a', bordercolor: '#06b6d4', font: { color: '#06b6d4', family: 'JetBrains Mono, monospace' } }
+  }
+
+  const layout = {
+    ...getChartLayoutBase(''),
+    margin: { l: 36, r: 80, t: 32, b: 36 },
+    title: {
+      text: `${style.displayName} 异常预警区`,
+      font: { color: '#e2e8f0', size: 12, family: 'Orbitron, sans-serif' },
+      x: 0.5,
+      xanchor: 'center',
+      y: 0.98,
+      yanchor: 'top'
+    },
+    xaxis: { constrain: 'domain', showticklabels: true, tickfont: { color: '#64748b', size: 8 }, gridcolor: 'rgba(30, 41, 59, 0.45)', zeroline: false },
+    yaxis: { autorange: 'reversed', scaleanchor: 'x', scaleratio: renderCols > 0 && renderRows > 0 ? renderCols / renderRows : 1, showticklabels: true, tickfont: { color: '#64748b', size: 8 }, gridcolor: 'rgba(30, 41, 59, 0.45)', zeroline: false },
+    uirevision: 'forecast-warning-spatial-v1'
+  }
+
+  Plotly.react(container, [trace], layout, { responsive: true, displayModeBar: false })
+}
+
+const renderCorrelationHeatmap = () => {
+  const container = document.getElementById('correlation-chart')
+  if (!container || !correlationData.value?.correlation_grid) return
+
+  const grid = correlationData.value.correlation_grid
+  const renderRows = grid.length
+  const renderCols = renderRows > 0 ? grid[0].length : 0
+
+  let xCoords, yCoords
+  if (geoLon.value.length > 1 && geoLat.value.length > 1) {
+    const lons = geoLon.value
+    const lats = geoLat.value
+    xCoords = Array.from({ length: renderCols }, (_, i) => lons[0] + (i / Math.max(1, renderCols - 1)) * (lons[lons.length - 1] - lons[0]))
+    yCoords = Array.from({ length: renderRows }, (_, i) => lats[0] + (i / Math.max(1, renderRows - 1)) * (lats[lats.length - 1] - lats[0]))
+  }
+
+  const trace = {
+    z: grid,
+    ...(xCoords && yCoords ? { x: xCoords, y: yCoords } : {}),
+    type: 'heatmap',
+    zsmooth: 'best',
+    colorscale: 'RdBu_r',
+    zmin: -1,
+    zmax: 1,
+    hoverongaps: false,
+    showscale: true,
+    colorbar: {
+      title: { text: 'Pearson<br>Corr', font: { size: 9, color: '#94a3b8' } },
+      len: 0.8,
+      thickness: 10,
+      x: 1.02,
+      xanchor: 'left',
+      y: 0.5,
+      yanchor: 'middle',
+      tickfont: { color: '#94a3b8', size: 8, family: 'JetBrains Mono, monospace' },
+      outlinewidth: 0,
+      bgcolor: 'rgba(3,7,18,0.55)',
+      bordercolor: 'rgba(6,182,212,0.25)',
+      borderwidth: 1
+    },
+    hoverlabel: { bgcolor: '#0f172a', bordercolor: '#06b6d4', font: { color: '#06b6d4', family: 'JetBrains Mono, monospace' } }
+  }
+
+  const layout = {
+    ...getChartLayoutBase(''),
+    margin: { l: 36, r: 80, t: 32, b: 36 },
+    title: {
+      text: `${correlationData.value.var1} & ${correlationData.value.var2} 时空关联分析`,
+      font: { color: '#e2e8f0', size: 12, family: 'Orbitron, sans-serif' },
+      x: 0.5,
+      xanchor: 'center',
+      y: 0.98,
+      yanchor: 'top'
+    },
+    xaxis: { constrain: 'domain', showticklabels: true, tickfont: { color: '#64748b', size: 8 }, gridcolor: 'rgba(30, 41, 59, 0.45)', zeroline: false },
+    yaxis: { autorange: 'reversed', scaleanchor: 'x', scaleratio: renderCols > 0 && renderRows > 0 ? renderCols / renderRows : 1, showticklabels: true, tickfont: { color: '#64748b', size: 8 }, gridcolor: 'rgba(30, 41, 59, 0.45)', zeroline: false },
+    uirevision: 'forecast-correlation-spatial-v1'
+  }
+
+  Plotly.react(container, [trace], layout, { responsive: true, displayModeBar: false })
 }
 
 const scheduleStepDataLoad = (stepIdx = currentStep.value, immediate = false) => {
@@ -130,7 +296,7 @@ const onQuiverToggle = () => {
   Plotly.restyle(container, { visible: showQuiver.value }, spatialStreamlineTraceIndices)
 }
 
-const buildStreamlineTrace = (stepData, subplotIndex, renderRows, renderCols) => {
+const buildStreamlineTrace = (stepData, subplotIndex, renderRows, renderCols, xCoords, yCoords) => {
   const ssuItem = (stepData?.data || []).find((it) => String(it?.var || '').toUpperCase() === 'SSU')
   const ssvItem = (stepData?.data || []).find((it) => String(it?.var || '').toUpperCase() === 'SSV')
   const uField = ssuItem?.data
@@ -145,6 +311,15 @@ const buildStreamlineTrace = (stepData, subplotIndex, renderRows, renderCols) =>
   const stride = Math.max(3, Math.floor(Math.min(rows, cols) / 18))
   const sx = cols > 1 && renderCols > 1 ? (renderCols - 1) / (cols - 1) : 1
   const sy = rows > 1 && renderRows > 1 ? (renderRows - 1) / (rows - 1) : 1
+
+  const mapX = (cIdx) => {
+    if (!xCoords || xCoords.length < 2 || renderCols < 2) return cIdx
+    return xCoords[0] + (cIdx / (renderCols - 1)) * (xCoords[xCoords.length - 1] - xCoords[0])
+  }
+  const mapY = (rIdx) => {
+    if (!yCoords || yCoords.length < 2 || renderRows < 2) return rIdx
+    return yCoords[0] + (rIdx / (renderRows - 1)) * (yCoords[yCoords.length - 1] - yCoords[0])
+  }
 
   const streamX = []
   const streamY = []
@@ -168,15 +343,14 @@ const buildStreamlineTrace = (stepData, subplotIndex, renderRows, renderCols) =>
         const mag = Math.hypot(u, vv)
         if (mag < 1e-6) break
 
-        // In screen coordinates y grows downward, so +vv means forward.
         const stepScale = 0.45
         const dx = (u / mag) * stepScale
         const dy = (vv / mag) * stepScale
 
-        const x0 = cxRaw * sx
-        const y0 = cyRaw * sy
-        const x1 = (cxRaw + dx) * sx
-        const y1 = (cyRaw + dy) * sy
+        const x0 = mapX(cxRaw * sx)
+        const y0 = mapY(cyRaw * sy)
+        const x1 = mapX((cxRaw + dx) * sx)
+        const y1 = mapY((cyRaw + dy) * sy)
         streamX.push(x0, x1)
         streamY.push(y0, y1)
 
@@ -193,12 +367,12 @@ const buildStreamlineTrace = (stepData, subplotIndex, renderRows, renderCols) =>
         const angle1 = angle - Math.PI / 6
         const angle2 = angle + Math.PI / 6
 
-        const endX = cxRaw * sx
-        const endY = cyRaw * sy
-        const xw1 = endX - wingLen * Math.cos(angle1)
-        const yw1 = endY - wingLen * Math.sin(angle1)
-        const xw2 = endX - wingLen * Math.cos(angle2)
-        const yw2 = endY - wingLen * Math.sin(angle2)
+        const endX = mapX(cxRaw * sx)
+        const endY = mapY(cyRaw * sy)
+        const xw1 = mapX((cxRaw - wingLen * Math.cos(angle1)) * sx)
+        const yw1 = mapY((cyRaw - wingLen * Math.sin(angle1)) * sy)
+        const xw2 = mapX((cxRaw - wingLen * Math.cos(angle2)) * sx)
+        const yw2 = mapY((cyRaw - wingLen * Math.sin(angle2)) * sy)
 
         streamX.push(endX, xw1, null)
         streamY.push(endY, yw1, null)
@@ -230,24 +404,85 @@ const buildStreamlineTrace = (stepData, subplotIndex, renderRows, renderCols) =>
 const loadCurveData = async (r = null, c = null) => {
   if (!sessionId.value) return
   try {
-    const res =
-      r !== null && c !== null
-        ? await api.get(`/predict/${sessionId.value}/curve`, { params: { r, c } })
-        : await api.get(`/predict/${sessionId.value}/curve`)
+    const params = {}
     if (r !== null && c !== null) {
-      curveTitle.value = `点 (${r}, ${c}) 变化趋势`
+      params.r = r
+      params.c = c
+    }
+    const res = await api.get(`/predict/${sessionId.value}/curve`, { params })
+    if (r !== null && c !== null) {
+      curveTitle.value = `点 (${r}, ${c}) 时序预测`
     } else {
-      curveTitle.value = '区域变化趋势'
+      curveTitle.value = '区域平均 — 时序预测'
     }
     renderCurvePlot(res.data.data)
   } catch (err) {
-    console.error('加载长效趋势数据失败', err)
+    console.error('加载曲线失败', err)
+  }
+}
+
+const loadWarnings = async () => {
+  if (!sessionId.value) return
+  loadingWarning.value = true
+  try {
+    const res = await api.post(`/predict/${sessionId.value}/warnings`, {
+      thresholds: warningThresholds.value
+    })
+    warningsData.value = res.data
+  } catch (err) {
+    console.error('加载异常预警失败', err)
+  } finally {
+    loadingWarning.value = false
+  }
+  
+  await nextTick()
+  // 渲染第一个变量的警告地图作为默认
+  if (warningsData.value?.masks) {
+    const vars = Object.keys(warningsData.value.masks)
+    if (vars.length > 0) {
+      currentWarningVar.value = vars[0]
+      renderWarningHeatmap(vars[0])
+    }
+  }
+}
+
+const loadCorrelation = async () => {
+  if (!sessionId.value) return
+  loadingCorr.value = true
+  try {
+    const res = await api.get(`/predict/${sessionId.value}/correlation`, {
+      params: { var1: corrVar1.value, var2: corrVar2.value }
+    })
+    correlationData.value = res.data
+  } catch (err) {
+    console.error('加载关联分析失败', err)
+  } finally {
+    loadingCorr.value = false
+  }
+  
+  await nextTick()
+  if (correlationData.value) {
+    renderCorrelationHeatmap()
+    // 强制触发一次 resize 确保自适应容器
+    const el = document.getElementById('correlation-chart')
+    if (el) Plotly.Plots.resize(el)
   }
 }
 
 const onStepSliderInput = () => {
   stopPlay()
   scheduleStepDataLoad(currentStep.value, false)
+}
+
+const jumpForecastStep = (delta: number) => {
+  stopPlay()
+  const next = Math.max(0, Math.min(totalSteps.value - 1, currentStep.value + Number(delta)))
+  currentStep.value = next
+  scheduleStepDataLoad(next, true)
+}
+
+const applyCompareVarChange = async () => {
+  if (currentStepDataCache) renderCompareSpatial(currentStepDataCache)
 }
 
 const togglePlay = () => {
@@ -821,8 +1056,8 @@ const renderSpatialPlot = (stepData) => {
 
     const blockWidth = 1.0 / N
     const xStart = index * blockWidth
-    const xEnd = xStart + blockWidth * 0.88
-    const cbX = xEnd + 0.008
+    const xEnd = xStart + blockWidth * 0.80
+    const cbX = xEnd + 0.015
     const titleX = (xStart + xEnd) / 2
 
     const rawRows = Array.isArray(v?.data) ? v.data.length : 0
@@ -830,8 +1065,18 @@ const renderSpatialPlot = (stepData) => {
     const renderRows = Array.isArray(smoothedGrid) ? smoothedGrid.length : 0
     const renderCols = renderRows > 0 && Array.isArray(smoothedGrid[0]) ? smoothedGrid[0].length : 0
 
+    // Provide explicit x/y coordinate arrays if possible
+    let xCoords, yCoords
+    if (geoLon.value.length > 1 && geoLat.value.length > 1) {
+      const lons = geoLon.value
+      const lats = geoLat.value
+      xCoords = Array.from({ length: renderCols }, (_, i) => lons[0] + (i / Math.max(1, renderCols - 1)) * (lons[lons.length - 1] - lons[0]))
+      yCoords = Array.from({ length: renderRows }, (_, i) => lats[0] + (i / Math.max(1, renderRows - 1)) * (lats[lats.length - 1] - lats[0]))
+    }
+
     plots.push({
       z: smoothedGrid,
+      ...(xCoords && yCoords ? { x: xCoords, y: yCoords } : {}),
       type: 'heatmap',
       zsmooth: style.isMask ? false : 'best',
       colorscale: style.colorscale,
@@ -866,7 +1111,7 @@ const renderSpatialPlot = (stepData) => {
     // Keep streamline as an independent trace and only toggle visibility,
     // avoiding expensive full heatmap re-render on switch.
     if (String(v.var).toUpperCase() === 'SSUV') {
-      const trace = buildStreamlineTrace(stepData, index, renderRows, renderCols)
+      const trace = buildStreamlineTrace(stepData, index, renderRows, renderCols, xCoords, yCoords)
       if (trace) {
         const traceIndex = plots.length
         plots.push(trace)
@@ -888,7 +1133,7 @@ const renderSpatialPlot = (stepData) => {
   // Set explicit manual domains to dynamically place all charts in a single row
   const layout = {
     ...getChartLayoutBase(''),
-    margin: { l: 20, r: 10, t: 40, b: 20 },
+    margin: { l: 20, r: 20, t: 50, b: 20 },
     // Keep user zoom/pan state stable across Plotly.react updates.
     uirevision: 'forecast-spatial-v1',
     annotations
@@ -898,7 +1143,7 @@ const renderSpatialPlot = (stepData) => {
     const ax = i === 0 ? '' : (i + 1)
     const blockWidth = 1.0 / N
     const xStart = i * blockWidth
-    const xEnd = xStart + blockWidth * 0.88
+    const xEnd = xStart + blockWidth * 0.80
 
     layout[`xaxis${ax}`] = { domain: [xStart, xEnd], anchor: `y${ax}`, showticklabels: true, tickfont: { color: '#475569', size: 9 }, gridcolor: 'rgba(30, 41, 59, 0.5)', zeroline: false }
     layout[`yaxis${ax}`] = { scaleanchor: `x${ax}`, scaleratio: 1, domain: [0.05, 1.0], anchor: `x${ax}`, autorange: 'reversed', showticklabels: true, tickfont: { color: '#475569', size: 9 }, gridcolor: 'rgba(30, 41, 59, 0.5)', zeroline: false }
@@ -916,17 +1161,28 @@ const renderSpatialPlot = (stepData) => {
       const pr = Number(meta?.renderRows || 0)
       const pc = Number(meta?.renderCols || 0)
 
-      let c = Math.round(Number(pt.x))
-      let r = Math.round(Number(pt.y))
+      let c = 0
+      let r = 0
 
-      // Click coordinates are on rendered/upsampled grid; map them back to raw indices for backend.
-      if (rr > 1 && rc > 1 && pr > 1 && pc > 1) {
-        c = Math.round((Number(pt.x) / (pc - 1)) * (rc - 1))
-        r = Math.round((Number(pt.y) / (pr - 1)) * (rr - 1))
+      if (geoLon.value.length > 1 && geoLat.value.length > 1) {
+        const lons = geoLon.value
+        const lats = geoLat.value
+        const xRatio = (Number(pt.x) - lons[0]) / (lons[lons.length - 1] - lons[0] || 1)
+        const yRatio = (Number(pt.y) - lats[0]) / (lats[lats.length - 1] - lats[0] || 1)
+        c = Math.round(xRatio * (rc - 1))
+        r = Math.round(yRatio * (rr - 1))
+      } else {
+        c = Math.round(Number(pt.x))
+        r = Math.round(Number(pt.y))
+        // Click coordinates are on rendered/upsampled grid; map them back to raw indices for backend.
+        if (rr > 1 && rc > 1 && pr > 1 && pc > 1) {
+          c = Math.round((Number(pt.x) / (pc - 1)) * (rc - 1))
+          r = Math.round((Number(pt.y) / (pr - 1)) * (rr - 1))
+        }
       }
 
-      c = Math.max(0, c)
-      r = Math.max(0, r)
+      c = Math.max(0, Math.min(rc - 1, c))
+      r = Math.max(0, Math.min(rr - 1, r))
       loadCurveData(r, c)
     }
   })
@@ -942,7 +1198,7 @@ const renderCurvePlot = (curveData) => {
   const N = Math.max(1, plotItems.length)
 
   plotItems.forEach((v, index) => {
-    const hours = Array.from({ length: v.means.length }, (_, i) => (i + 1) * STEP_HOURS)
+    const hours = Array.from({ length: v.means.length }, (_, i) => (i + 1) * stepHours.value)
     const style = getVariableRenderStyle(v.var)
     const titleX = (index * (1.0 / N)) + (1.0 / N) * 0.5
 
@@ -998,11 +1254,127 @@ const renderCurvePlot = (curveData) => {
   Plotly.react(container, plots, layout, { responsive: true, displayModeBar: false })
 }
 
+const jsonGridToNum = (g) => {
+  if (!Array.isArray(g)) return []
+  return g.map((row) =>
+    (Array.isArray(row) ? row : []).map((v) =>
+      v === null || v === undefined || Number.isNaN(Number(v)) ? NaN : Number(v)
+    )
+  )
+}
+
+const _renderSingleCompareHeatmap = (elId, block, rowVar) => {
+  const container = document.getElementById(elId)
+  if (!container) return
+
+  const holeFilled = fillInternalMissingPoints(block.z, 2, 5)
+  const upsampled = upsampleGridBilinear(holeFilled, block.scale.upsampleScale, block.scale.validWeightThreshold)
+  const smoothed =
+    block.scale.smoothPasses > 0 ? smoothGridMasked(upsampled, block.scale.smoothPasses, block.scale.smoothMode) : upsampled
+  const colorRange = getAutoColorRange(smoothed, block.scale)
+    const rawRows = block.z.length
+    const rawCols = rawRows > 0 && Array.isArray(block.z[0]) ? block.z[0].length : 0
+    const renderRows = smoothed.length
+    const renderCols = renderRows > 0 && Array.isArray(smoothed[0]) ? smoothed[0].length : 0
+
+  let xCoords, yCoords
+  if (geoLon.value.length > 1 && geoLat.value.length > 1) {
+    const lons = geoLon.value
+    const lats = geoLat.value
+    xCoords = Array.from({ length: renderCols }, (_, i) => lons[0] + (i / Math.max(1, renderCols - 1)) * (lons[lons.length - 1] - lons[0]))
+    yCoords = Array.from({ length: renderRows }, (_, i) => lats[0] + (i / Math.max(1, renderRows - 1)) * (lats[lats.length - 1] - lats[0]))
+  }
+
+  const trace = {
+    z: smoothed,
+    ...(xCoords && yCoords ? { x: xCoords, y: yCoords } : {}),
+      type: 'heatmap',
+    zsmooth: 'best',
+    colorscale: block.scale.colorscale,
+    ...colorRange,
+    hoverongaps: false,
+    showscale: true,
+    colorbar: {
+      title: { text: block.scale.unit ? `${block.scale.displayName}<br>${block.scale.unit}` : block.key, font: { size: 9, color: '#94a3b8' } },
+      len: 0.82,
+      thickness: 10,
+      x: 1.02,
+      xanchor: 'left',
+      y: 0.5,
+      yanchor: 'middle',
+      tickfont: { color: '#94a3b8', size: 8, family: 'JetBrains Mono, monospace' },
+      outlinewidth: 0,
+      bgcolor: 'rgba(3,7,18,0.55)',
+      bordercolor: 'rgba(6,182,212,0.25)',
+      borderwidth: 1
+    },
+    meta: { rawRows, rawCols, renderRows, renderCols, varName: String(rowVar || '') },
+    hoverlabel: { bgcolor: '#0f172a', bordercolor: '#06b6d4', font: { color: '#06b6d4', family: 'JetBrains Mono, monospace' } }
+  }
+
+  const layout = {
+    ...getChartLayoutBase(''),
+    margin: { l: 36, r: 100, t: 32, b: 36 },
+    title: {
+      text: block.key,
+      font: { color: '#e2e8f0', size: 12, family: 'Orbitron, sans-serif' },
+      x: 0.5,
+      xanchor: 'center',
+      y: 0.98,
+      yanchor: 'top'
+    },
+    xaxis: {
+      constrain: 'domain',
+      showticklabels: true,
+      tickfont: { color: '#64748b', size: 8 },
+      gridcolor: 'rgba(30, 41, 59, 0.45)',
+      zeroline: false
+    },
+    yaxis: {
+      autorange: 'reversed',
+      scaleanchor: 'x',
+      scaleratio: renderCols > 0 && renderRows > 0 ? renderCols / renderRows : 1,
+      showticklabels: true,
+      tickfont: { color: '#64748b', size: 8 },
+      gridcolor: 'rgba(30, 41, 59, 0.45)',
+      zeroline: false
+    },
+    uirevision: `forecast-compare-slot-${elId}`
+  }
+
+  Plotly.react(container, [trace], layout, { responsive: true, displayModeBar: false })
+}
+
+const renderCompareSpatial = (stepData) => {
+  if (!stepData?.data?.length) return
+
+  const vi = Math.max(0, Math.min(compareVarIndex.value, stepData.data.length - 1))
+  const row = stepData.data[vi]
+  if (!row || !('true' in row)) return
+
+  const style = getVariableRenderStyle(row.var)
+  const triple = [
+    { key: '预测', z: jsonGridToNum(row.data), scale: style },
+    { key: '实况', z: jsonGridToNum(row.true), scale: style },
+    {
+      key: '预报−实况',
+      z: jsonGridToNum(row.diff),
+      scale: { ...style, displayName: `${style.displayName}_DIFF`, diverging: true, colorscale: 'RdBu_r' }
+    }
+  ]
+
+  const ids = ['compare-spatial-0', 'compare-spatial-1', 'compare-spatial-2']
+  triple.forEach((block, i) => {
+    _renderSingleCompareHeatmap(ids[i], block, row.var)
+  })
+}
+
 const updateVerticalLineOnCurve = () => {
+  if (!showCurvePanel.value) return
   const container = document.getElementById('curve-chart')
   if (!container || !hasResult.value) return
 
-  const currentHour = (currentStep.value + 1) * STEP_HOURS
+  const currentHour = (currentStep.value + 1) * stepHours.value
   const shapes = []
 
   for (let i = 1; i <= 4; i++) {
@@ -1024,6 +1396,39 @@ function disposeForecastTimers() {
   }
 }
 
+watch(showCurvePanel, async (open) => {
+  await nextTick()
+  if (open && hasResult.value && sessionId.value) {
+    try {
+      await loadCurveData()
+      updateVerticalLineOnCurve()
+    } catch {
+      // ignore
+    }
+  }
+  resizeForecastCharts(hasResult.value)
+})
+
+watch(spatialWorkbenchTab, async (tab) => {
+  if (!hasResult.value) return
+  await nextTick()
+  if (tab === 'forecast') {
+    if (currentStepDataCache) renderSpatialPlot(currentStepDataCache)
+  } else if (tab === 'compare') {
+    if (currentStepDataCache) renderCompareSpatial(currentStepDataCache)
+  } else if (tab === 'warning') {
+    if (!warningsData.value) loadWarnings()
+    else {
+      const vars = Object.keys(warningsData.value.masks || {})
+      if (vars.length > 0) renderWarningHeatmap(vars[0])
+    }
+  } else if (tab === 'correlation') {
+    if (!correlationData.value) loadCorrelation()
+    else renderCorrelationHeatmap()
+  }
+  resizeForecastCharts(hasResult.value)
+})
+
 export function useForecast() {
   return {
     modelPath,
@@ -1041,11 +1446,24 @@ export function useForecast() {
     showQuiver,
     playbackSpeed,
     curveTitle,
-    STEP_HOURS,
+    stepHours,
+    spatialWorkbenchTab,
+    compareVarIndex,
+    showCurvePanel,
+    warningsData,
+    loadingWarning,
+    warningThresholds,
+    currentWarningVar,
+    correlationData,
+    loadingCorr,
+    corrVar1,
+    corrVar2,
     loadDefaultDataPath,
     loadDataInfo,
     runPrediction,
     loadStepData,
+    jumpForecastStep,
+    applyCompareVarChange,
     scheduleStepDataLoad,
     onQuiverToggle,
     onStepSliderInput,
@@ -1053,8 +1471,12 @@ export function useForecast() {
     onSpeedChange,
     stopPlay,
     loadCurveData,
+    loadWarnings,
+    loadCorrelation,
     renderSpatialPlot,
     renderCurvePlot,
+    renderWarningHeatmap,
+    renderCorrelationHeatmap,
     updateVerticalLineOnCurve,
     disposeForecastTimers,
     resizeForecastCharts
@@ -1063,6 +1485,17 @@ export function useForecast() {
 
 export function resizeForecastCharts(hasResult: boolean) {
   if (!hasResult) return
-  Plotly.Plots.resize('spatial-chart')
-  Plotly.Plots.resize('curve-chart')
+  const ids = [
+    'spatial-chart',
+    'curve-chart',
+    'compare-spatial-0',
+    'compare-spatial-1',
+    'compare-spatial-2',
+    'warning-spatial-chart',
+    'correlation-chart'
+  ]
+  for (const id of ids) {
+    const el = document.getElementById(id)
+    if (el) Plotly.Plots.resize(el)
+  }
 }
