@@ -190,7 +190,7 @@ def train_eddy_segmentation(
 	)
 
 	opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-	best_key = -1.0
+	best_key = (-1.0, -1.0)
 	best_path = ckpt_dir / "best.pt"
 
 	for epoch in range(cfg.epochs):
@@ -226,8 +226,8 @@ def train_eddy_segmentation(
 			val_m["macro_f1"],
 		)
 
-		# 目标导向：仅看涡旋（气旋+反气旋合并）的 IoU 选优。
-		score = float(val_m.get("eddy_iou", val_m["miou"]))
+		# 目标导向：优先按整体 mIoU 选优，若相同则再看涡旋（气旋+反气旋合并）的 IoU。
+		score = (float(val_m.get("miou", 0.0)), float(val_m.get("eddy_iou", 0.0)))
 		state = {
 			"epoch": epoch + 1,
 			"model_state_dict": model.state_dict(),
@@ -241,6 +241,6 @@ def train_eddy_segmentation(
 			best_key = score
 			torch.save(state, best_path)
 
-	_log.info("best checkpoint: %s", best_path)
+	_log.info("best checkpoint: %s (best_miou=%.4f best_eddy_iou=%.4f)", best_path, best_key[0], best_key[1])
 	return best_path
 

@@ -20,7 +20,8 @@ const totalSteps = ref(0)
 const currentStep = ref(0)
 
 const isPlaying = ref(false)
-let playInterval = null
+let playTimer = null
+let playToken = 0
 let currentStepDataCache = null
 let stepFetchTimer = null
 let spatialStreamlineTraceIndices = []
@@ -122,8 +123,12 @@ const loadStepData = async (stepIdx = currentStep.value) => {
     lastAppliedStepSeq = reqSeq
     lastLoadedStepIdx = targetStep
     currentStepDataCache = res.data
-    renderSpatialPlot(currentStepDataCache)
-    renderCompareSpatial(currentStepDataCache)
+    if (spatialWorkbenchTab.value === 'compare') {
+      renderCompareSpatial(currentStepDataCache)
+    } else {
+      // Default path keeps forecast view responsive during playback.
+      renderSpatialPlot(currentStepDataCache)
+    }
     if (showCurvePanel.value) updateVerticalLineOnCurve()
   } catch (err) {
     console.error('数据游标读取失败', err)
@@ -492,17 +497,22 @@ const togglePlay = () => {
   }
 
   isPlaying.value = true
+  playToken += 1
+  const localToken = playToken
   if (currentStep.value >= totalSteps.value - 1) currentStep.value = 0
   scheduleStepDataLoad(currentStep.value, true)
-
-  playInterval = setInterval(() => {
+  const playLoop = async () => {
+    if (!isPlaying.value || localToken !== playToken) return
     if (currentStep.value >= totalSteps.value - 1) {
       stopPlay()
       return
     }
     currentStep.value += 1
-    scheduleStepDataLoad(currentStep.value, true)
-  }, Math.max(100, 1200 / playbackSpeed.value))
+    await loadStepData(currentStep.value)
+    if (!isPlaying.value || localToken !== playToken) return
+    playTimer = setTimeout(playLoop, Math.max(100, 1200 / playbackSpeed.value))
+  }
+  playTimer = setTimeout(playLoop, Math.max(100, 1200 / playbackSpeed.value))
 }
 
 const onSpeedChange = () => {
@@ -514,8 +524,9 @@ const onSpeedChange = () => {
 
 const stopPlay = () => {
   isPlaying.value = false
-  if (playInterval) clearInterval(playInterval)
-  playInterval = null
+  playToken += 1
+  if (playTimer) clearTimeout(playTimer)
+  playTimer = null
 }
 
 function getVariableRenderStyle(varNameRaw: string) {
